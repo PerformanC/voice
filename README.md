@@ -28,7 +28,7 @@ client.ws.on('VOICE_STATE_UPDATE', (data) => {
   if (data.guild_id == guildId && data.user_id == userId) {
     djsVoice.voiceStateUpdate({
       guildId: data.guild_id,
-      userId: data.user_id
+      userId: data.user_id,
       sessionId: data.session_id
     })
   }
@@ -52,7 +52,7 @@ connection.on('stateChange', (oldState, newState) => {
 })
 
 connection.on('playerStateChange', (oldState, newState) => {
-  if (ewState.status == 'idle' && oldState.status != 'idle') {
+  if (newState.status == 'idle' && oldState.status != 'idle') {
     console.log('End of audio')
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@performanc/voice",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Performant Discord voice API client for ES6 Node.js",
   "main": "index.js",
   "type": "module",
