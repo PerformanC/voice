@@ -1,0 +1,28 @@
+{
+  "name": "@performanc/voice",
+  "version": "1.0.0",
+  "description": "Performant Discord voice API client for ES6 Node.js",
+  "main": "index.js",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PerformanC/voice.git"
+  },
+  "keywords": [
+    "discord",
+    "voice",
+    "api",
+    "client"
+  ],
+  "author": "The PerformanC Organization",
+  "license": "SEE LICENSE IN LICENSE",
+  "bugs": {
+    "url": "https://github.com/PerformanC/voice/issues"
+  },
+  "homepage": "https://github.com/PerformanC/voice#readme",
+  "optionalDependencies": {
+    "sodium-native": "^4.0.4",
+    "libsodium-wrappers": "^0.7.13",
+    "tweetnacl": "^1.0.3"
+  }
+}
