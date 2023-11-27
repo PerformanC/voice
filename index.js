@@ -294,7 +294,7 @@ class Connection extends EventEmitter {
 
         const output = Sodium.close(chunk, this.nonceBuffer, this.udpInfo.secretKey)
 
-        this.udpSend(Buffer.concat([packetBuffer, output, this.nonceBuffer.subarray(0, 4) ]))
+        this.udpSend(Buffer.concat([ packetBuffer, output, this.nonceBuffer.subarray(0, 4) ]))
 
         break
       }
@@ -302,21 +302,14 @@ class Connection extends EventEmitter {
         const random = Sodium.random(24, this.nonceBuffer)
         const output = Sodium.close(chunk, random, this.udpInfo.secretKey)
 
-        this.udpSend(Buffer.concat([packetBuffer, output, random ]))
+        this.udpSend(Buffer.concat([ packetBuffer, output, random ]))
 
         break
       }
       case 'xsalsa20_poly1305': {
         const output = Sodium.close(chunk, nonce, this.udpInfo.secretKey)
 
-        this.udpSend(Buffer.concat([packetBuffer, output ]))
-
-        break
-      }
-      case 'aead_aes256_gcm': {
-        const output = Sodium.close(chunk, nonce, this.udpInfo.secretKey)
-
-        this.udpSend(Buffer.concat([packetBuffer, output ]))
+        this.udpSend(Buffer.concat([ packetBuffer, output ]))
 
         break
       }
@@ -346,11 +339,9 @@ class Connection extends EventEmitter {
       const packetBuffer = Buffer.allocUnsafe(12)
 
       this.playInterval = setInterval(() => {
-        if (!this.audioStream || this.state.status != 'ready') return this.stop()
-
         const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
 
-        if (!chunk || this.state.status == 'idle') return this.stop()
+        if (!chunk) return this.stop()
 
         this.sendAudioChunk(packetBuffer, chunk)
       }, OPUS_FRAME_DURATION)
@@ -383,17 +374,18 @@ class Connection extends EventEmitter {
     const packetBuffer = Buffer.allocUnsafe(12)
 
     this.playInterval = setInterval(() => {
-      if (!this.audioStream || this.state.status != 'ready') return this.stop()
-
       const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
 
-      if (!chunk || this.state.status == 'idle') return this.stop()
+      if (!chunk) return this.stop()
 
       this.sendAudioChunk(packetBuffer, chunk)
     }, OPUS_FRAME_DURATION)
   }
 
   destroy() {
+    clearInterval(this.hbInterval)
+    clearInterval(this.playInterval)
+
     if (this.ws) this.ws.close()
     if (this.udp) this.udp.close()
 
@@ -410,9 +402,6 @@ class Connection extends EventEmitter {
 
     this._updateState({ status: 'destroyed' })
     this._updatePlayerState({ status: 'idle' })
-
-    clearInterval(this.hbInterval)
-    clearInterval(this.playInterval)
 
     delete adapters[`${this.userId}/${this.guildId}`]
   }
