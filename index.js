@@ -158,7 +158,7 @@ class Connection extends EventEmitter {
             const ssrc = data.readUInt32BE(8)
             const userData = ssrcs[ssrc]
 
-            if (!userData) return;
+            if (!userData || !this.udpInfo.secretKey) return;
 
             if (!userData.stream) {
               userData.stream = new PassThrough()
