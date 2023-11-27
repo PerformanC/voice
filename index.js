@@ -182,14 +182,10 @@ class Connection extends EventEmitter {
             data.copy(this.nonceBuffer, 0, dataEnd)
             const voice = data.subarray(12, dataEnd)
 
-            const output = Sodium.open(voice, this.nonceBuffer, this.udpInfo.secretKey)
+            let packet = Buffer.from(Sodium.open(voice, this.nonceBuffer, this.udpInfo.secretKey))
 
-            let packet = Buffer.from(output)
-
-            if (packet[0] == 0xbe && packet[1] == 0xde) {
-              const headerExtensionLength = packet.readUInt16BE(2)
-              packet = packet.subarray(4 + 4 * headerExtensionLength)
-            }
+            if (packet[0] == 0xbe && packet[1] == 0xde)
+              packet = packet.subarray(4 + 4 * packet.readUInt16BE(2))
 
             userData.stream.write(packet)
           })
@@ -363,7 +359,7 @@ class Connection extends EventEmitter {
 
   stop() {
     clearInterval(this.playInterval)
-    this.audioStream.resume()
+    this.audioStream.destroy()
     this.audioStream = null
 
     this._updatePlayerState({ status: 'idle' })
@@ -407,8 +403,10 @@ class Connection extends EventEmitter {
     this.udpInfo = null
     this.voiceServer = null
     this.sessionId = null
-    if (this.audioStream) this.audioStream.resume()
-    this.audioStream = null
+    if (this.audioStream) {
+      this.audioStream.destroy()
+      this.audioStream = null
+    }
 
     this._updateState({ status: 'destroyed' })
     this._updatePlayerState({ status: 'idle' })
