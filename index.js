@@ -9,6 +9,7 @@ const nonce = Buffer.alloc(24)
 const OPUS_SAMPLE_RATE = 48000
 const OPUS_FRAME_DURATION = 20
 const OPUS_FRAME_SIZE = OPUS_SAMPLE_RATE * OPUS_FRAME_DURATION / 1000
+const OPUS_SILENCE_FRAME = Buffer.from([ 0xf8, 0xff, 0xfe ])
 const TIMESTAMP_INCREMENT = (OPUS_SAMPLE_RATE / 100) * 2
 const MAX_NONCE = 2 ** 32 - 1
 const MAX_TIMESTAMP = 2 ** 32
@@ -160,26 +161,29 @@ class Connection extends EventEmitter {
 
             if (!userData || !this.udpInfo.secretKey) return;
 
-            if (!userData.stream) {
-              userData.stream = new PassThrough()
+            let dataEnd = null
 
-              this.emit('speakStart', userData.userId, ssrc)
+            switch (ENCRYPTION_MODE) {
+              case 'xsalsa20_poly1305_lite': {
+                dataEnd = data.length - 4
+                data.copy(this.nonceBuffer, 0, dataEnd)
+
+                break
+              }
+              case 'xsalsa20_poly1305_suffix': {
+                dataEnd = data.length - 24
+                data.copy(this.nonceBuffer, 0, dataEnd)
+
+                break
+              }
+              case 'xsalsa20_poly1305': {
+                dataEnd = data.length
+                data.copy(this.nonceBuffer, 0, 0, 12)
+
+                break
+              }
             }
 
-            clearTimeout(userData.timeout)
-
-            userData.timeout = setTimeout(() => {
-              this.emit('speakEnd', userData.userId, ssrc)
-
-              if (userData) {
-                userData.stream.end()
-                userData.stream = null
-              }
-            })
-          
-            const dataEnd = data.length - 4
-
-            data.copy(this.nonceBuffer, 0, dataEnd)
             const voice = data.subarray(12, dataEnd)
 
             let packet = Buffer.from(Sodium.open(voice, this.nonceBuffer, this.udpInfo.secretKey))
@@ -187,7 +191,22 @@ class Connection extends EventEmitter {
             if (packet[0] == 0xbe && packet[1] == 0xde)
               packet = packet.subarray(4 + 4 * packet.readUInt16BE(2))
 
-            userData.stream.write(packet)
+            if (packet.compare(OPUS_SILENCE_FRAME) == 0) {
+              if (userData.stream._readableState.ended) return;
+
+              this.emit('speakEnd', userData.userId, ssrc)
+
+              userData.stream.emit('end')
+              userData.stream.push(null)
+            } else {
+              if (userData.stream._readableState.ended) {
+                userData.stream = new PassThrough()
+
+                this.emit('speakStart', userData.userId, ssrc)
+              }
+
+              userData.stream.write(packet)
+            }
           })
 
           this.udp.on('error', (error) => this.emit('error', error))
