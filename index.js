@@ -223,7 +223,7 @@ class Connection extends EventEmitter {
               data: {
                 address: serverInfo.ip,
                 port: serverInfo.port,
-                mode: 'xsalsa20_poly1305_lite'
+                mode: ENCRYPTION_MODE
               }
             }
           }))
