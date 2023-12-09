@@ -26,9 +26,7 @@ const connection =  perfcVoice.joinVoiceChannel({ guildId: guildId, userId: user
 
 client.ws.on('VOICE_STATE_UPDATE', (data) => {
   if (data.guild_id == guildId && data.user_id == userId) {
-    djsVoice.voiceStateUpdate({
-      guildId: data.guild_id,
-      userId: data.user_id,
+    connection.voiceStateUpdate({
       sessionId: data.session_id
     })
   }
@@ -36,9 +34,7 @@ client.ws.on('VOICE_STATE_UPDATE', (data) => {
 
 client.ws.on('VOICE_SERVER_UPDATE', (data) => {
   if (data.guild_id == guildId && data.user_id == userId) {
-    djsVoice.voiceServerUpdate({
-      userId: data.user_id,
-      guildId: data.guild_id,
+    connection.voiceServerUpdate({
       token: data.token,
       endpoint: data.endpoint
     })
