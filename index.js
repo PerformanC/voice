@@ -16,7 +16,6 @@ const MAX_TIMESTAMP = 2 ** 32
 const MAX_SEQUENCE = 2 ** 16
 const ENCRYPTION_MODE = 'xsalsa20_poly1305_lite'
 
-const adapters = {}
 const ssrcs = {}
 
 class Connection extends EventEmitter {
@@ -54,8 +53,6 @@ class Connection extends EventEmitter {
 
     this.playInterval = null
     this.audioStream = null
-
-    adapters[`${this.userId}/${this.guildId}`] = this
   }
 
   udpSend(data) {
@@ -401,15 +398,24 @@ class Connection extends EventEmitter {
     }, OPUS_FRAME_DURATION)
   }
 
-  destroy() {
+  _destroyConnection(code, reason) {
     clearInterval(this.hbInterval)
     clearInterval(this.playInterval)
 
-    if (this.ws) this.ws.close()
-    if (this.udp) this.udp.close()
+    if (this.ws) {
+      this.ws.close(code, reason)
+      this.ws.removeAllListeners()
+      this.ws = null
+    }
+    if (this.udp) {
+      this.udp.close()
+      this.udp.removeAllListeners()
+      this.udp = null
+    }
+  }
 
-    this.ws = null
-    this.udp = null
+  _destroy(state) {
+    this._destroyConnection(1000, 'Normal closure')
 
     this.udpInfo = null
     this.voiceServer = null
@@ -419,37 +425,42 @@ class Connection extends EventEmitter {
       this.audioStream = null
     }
 
-    this._updateState({ status: 'destroyed' })
+    this._updateState(state)
     this._updatePlayerState({ status: 'idle' })
+  }
 
-    delete adapters[`${this.userId}/${this.guildId}`]
+  destroy() {
+    this._destroy({ status: 'destroyed' })
+  }
+
+  voiceStateUpdate(obj) {
+    this.sessionId = obj.session_id
+  }
+
+  _voiceServerUpdate(obj) {
+    this.voiceServer = {
+      token: obj.token,
+      endpoint: obj.endpoint
+    }
+
+    this._updateState({ status: 'connecting' })
+  }
+
+  voiceServerUpdate(obj) {
+    if (this.voiceServer?.token == obj.token && this.voiceServer?.endpoint == obj.endpoint) return;
+
+    this._voiceServerUpdate(obj)
+
+    if (this.ws)  {
+      this._destroyConnection(4015, 'Voice server update')
+
+      this.connect(() => this.unpause(), false)
+    }
   }
 }
 
 function joinVoiceChannel(obj) {
   return new Connection(obj)
-}
-
-function voiceStateUpdate(obj) {
-  const connection = adapters[`${obj.user_id}/${obj.guild_id}`]
-
-  if (!connection) return
-
-  connection.sessionId = obj.session_id
-}
-
-function voiceServerUpdate(obj) {
-  const connection = adapters[`${obj.user_id}/${obj.guild_id}`]
-
-  if (!connection) return;
-
-  connection.voiceServer = {
-    token: obj.token,
-    guildId: obj.guild_id,
-    endpoint: obj.endpoint
-  }
-
-  if (!connection.ws) connection._updateState({ status: 'connecting' })
 }
 
 function getSpeakStream(ssrc) {
@@ -458,7 +469,5 @@ function getSpeakStream(ssrc) {
 
 export default {
   joinVoiceChannel,
-  voiceStateUpdate,
-  voiceServerUpdate,
   getSpeakStream
 }

@@ -8,7 +8,6 @@ Creates informations to create a connection to a voice channel.
 
 ```
 perfcVoice.joinVoiceChannel({
-  channelId: '',
   guildId: '12345678910',
   userId: '12345678910'
 })
@@ -20,7 +19,6 @@ perfcVoice.joinVoiceChannel({
 ## Parameters
 
 - `options` - An object containing the following parameters:
-  - `channelId` - The ID of the voice channel to join.
   - `guildId` - The ID of the guild that the voice channel is in.
   - `userId` - The ID of the user that is connecting to the voice channel.
 

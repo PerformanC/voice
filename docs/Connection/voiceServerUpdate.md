@@ -7,22 +7,20 @@ Adds informations to create a connection to a voice channel.
 ## Syntax
 
 ```
-perfcVoice.voiceServerUpdate({
-  userId: '12345678910',
-  guildId: '12345678910',
-  token: '...'
+connection.voiceServerUpdate({
+  token: '...',
+  endpoint: '...'
 })
 ```
 
 > [!WARNING]  
-> Invalid parameters will NOT cause the function to throw an error, but will instead cause the connection to fail silently.
+> Invalid parameters will NOT cause the function to throw an error, but will instead cause the connection to emit a 4006 error from Discord.
 
 ## Parameters
 
 - `options` - An object containing the following parameters:
-  - `guildId` - The ID of the guild that the voice channel is in.
-  - `userId` - The ID of the user that is connecting to the voice channel.
   - `token` - The token of the voice channel.
+  - `endpoint` - The endpoint of the voice channel.
 
 ## Return value
 
