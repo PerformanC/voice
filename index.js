@@ -127,7 +127,7 @@ class Connection extends EventEmitter {
         this.ws.send(JSON.stringify({
           op: 0,
           d: {
-            server_id: this.voiceServer.guildId,
+            server_id: this.guildId,
             user_id: this.userId,
             session_id: this.sessionId,
             token: this.voiceServer.token
