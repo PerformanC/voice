@@ -350,17 +350,7 @@ class Connection extends EventEmitter {
 
       this.audioStream = audioStream
 
-      this._updatePlayerState({ status: 'playing' })
-
-      const packetBuffer = Buffer.allocUnsafe(12)
-
-      this.playInterval = setInterval(() => {
-        const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
-
-        if (!chunk) return this.stop()
-
-        this.sendAudioChunk(packetBuffer, chunk)
-      }, OPUS_FRAME_DURATION)
+      this.unpause()
     })
   }
 
@@ -371,7 +361,8 @@ class Connection extends EventEmitter {
 
     this._updatePlayerState({ status: 'idle' })
 
-    this.udpSend(Buffer.from([ 0xF8, 0xFF, 0xFE ]))
+    this.udpSend(OPUS_SILENCE_FRAME)
+
     this._setSpeaking(0)
   }
 
