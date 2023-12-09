@@ -211,9 +211,7 @@ class Connection extends EventEmitter {
           this.udp.on('close', () => {
             if (!this.ws) return;
 
-            this.destroy()
-
-            this.emit('error', new Error('UDP socket closed unexpectadly.'))
+            this._destroy({ status: 'disconnected' })
           })
 
           const serverInfo = await this._ipDiscovery()
@@ -272,15 +270,12 @@ class Connection extends EventEmitter {
     this.ws.on('close', (code) => {
       if (!this.ws) return;
 
-      this.destroy()
-
-      this._updateState({ status: 'disconnected', reason: 'websocketClose', code: code })
-      this._updatePlayerState({ status: 'idle' })
+      this._destroy({ status: 'disconnected', reason: 'websocketClose', code })
 
       if (code == 4015) {
         this.connect(null, true)
       } else {
-        this.emit('error', new Error('WebSocket closed unexpectadly.'))
+        this.emit('error', new Error(`WebSocket closed unexpectadly: ${code}`))
       }
     })
 
