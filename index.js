@@ -109,7 +109,7 @@ class Connection extends EventEmitter {
 
     this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=4`, {
       headers: {
-        'User-Agent': `DiscordBot (https://github.com/PerformanC/voice, 1.0.1)`
+        'User-Agent': `DiscordBot (https://github.com/PerformanC/voice, 1.0.2)`
       }
     })
 
@@ -193,7 +193,6 @@ class Connection extends EventEmitter {
 
               this.emit('speakEnd', userData.userId, ssrc)
 
-              userData.stream.emit('end')
               userData.stream.push(null)
             } else {
               if (userData.stream._readableState.ended) {
