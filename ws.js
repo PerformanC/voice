@@ -138,6 +138,7 @@ class WebSocket extends EventEmitter {
               const reason = headers.buffer.subarray(2).toString('utf-8')
 
               this.emit('close', code, reason)
+              socket.removeAllListeners('close')
             }
 
             socket.end()
