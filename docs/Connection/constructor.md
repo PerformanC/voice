@@ -29,7 +29,6 @@ A `Connection` class instance, with the following properties:
     - `connecting` - The connection is connecting to the Discord voice server.
     - `connected` - The connection is connected to the Discord voice server.
     - `reconnecting` - The connection is reconnecting to the Discord voice server.
-    - `disconnecting` - The connection is disconnecting from the Discord voice server.
 
 - `playerState` - An object containing the following properties:
   - `status` - The status of the audio stream. Can be one of the following:

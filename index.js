@@ -253,6 +253,10 @@ class Connection extends EventEmitter {
           this.udpInfo.secretKey = new Uint8Array(payload.d.secret_key)
 
           if (cb) cb()
+          else {
+            this._updateState({ status: 'connected' })
+            this._updatePlayerState({ status: 'idle', reason: 'connected' })
+          }
 
           break
         }
