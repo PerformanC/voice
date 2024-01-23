@@ -291,11 +291,12 @@ class Connection extends EventEmitter {
 
       if (closeCode.reconnect) {
         this._updateState({ status: 'disconnected', reason: 'websocketClose', code })
-        this._updatePlayerState({ status: 'idle' })
+        this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
 
         this.emit('reconnecting', closeCode.message)
 
-        this.connect(() => this.unpause(), true)
+        this.pause()
+        this.connect(() => this.unpause('reconnected'), true)
       } else {
         this._destroy({ status: 'disconnected', reason: 'websocketClose', code })
 
@@ -381,31 +382,31 @@ class Connection extends EventEmitter {
 
       this.audioStream = audioStream
 
-      this.unpause()
+      this.unpause('requested')
     })
   }
 
-  stop() {
+  stop(reason) {
     clearInterval(this.playInterval)
     this.audioStream.destroy()
     this.audioStream = null
 
-    this._updatePlayerState({ status: 'idle' })
+    this._updatePlayerState({ status: 'idle', reason: reason ?? 'requested' })
 
     this.udpSend(OPUS_SILENCE_FRAME)
 
     this._setSpeaking(0)
   }
 
-  pause() {
-    this._updatePlayerState({ status: 'paused' })
+  pause(reason) {
+    this._updatePlayerState({ status: 'paused', reason: reason ?? 'requested' })
 
     this._setSpeaking(0)
     clearInterval(this.playInterval)
   }
 
-  unpause() {
-    this._updatePlayerState({ status: 'playing' })
+  unpause(reason) {
+    this._updatePlayerState({ status: 'playing', reason: reason ?? 'requested' })
 
     this._setSpeaking(1 << 0)
 
@@ -414,7 +415,7 @@ class Connection extends EventEmitter {
     this.playInterval = setInterval(() => {
       const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
 
-      if (!chunk) return this.stop()
+      if (!chunk) return this.stop('finished')
 
       this.sendAudioChunk(packetBuffer, chunk)
     }, OPUS_FRAME_DURATION)
@@ -448,7 +449,7 @@ class Connection extends EventEmitter {
     }
 
     this._updateState(state)
-    this._updatePlayerState({ status: 'idle' })
+    this._updatePlayerState({ status: 'idle', reason: 'destroyed' })
   }
 
   destroy() {
@@ -476,7 +477,7 @@ class Connection extends EventEmitter {
     if (this.ws)  {
       this._destroyConnection(4015, 'Voice server update')
 
-      this.connect(() => this.unpause(), false)
+      this.connect(() => this.unpause('reconnected'), false)
     }
   }
 }

@@ -7,8 +7,12 @@ Pauses the audio stream.
 ## Syntax
 
 ```
-connection.pause()
+connection.pause('Player wanted to pause.')
 ```
+
+## Parameters
+
+- `reason` - The reason that will be sent to `playerStateChange` listeners.
 
 ## Return value
 
@@ -22,5 +26,9 @@ Nothing.
 ### 1.0.0
 
 - Initial implementation
+
+### 1.0.4
+
+- Added optional `reason` parameter
 
 </details>
