@@ -50,6 +50,11 @@ class Connection extends EventEmitter {
     this.udp = null
 
     this.ping = -1
+    this.statistics = {
+      packetsSent: 0,
+      packetsLost: 0,
+      packetsExpected: 0
+    }
 
     this.player = {
       sequence: 0,
@@ -63,8 +68,12 @@ class Connection extends EventEmitter {
     this.audioStream = null
   }
 
-  udpSend(data) {
-    this.udp.send(data, this.udpInfo.port, this.udpInfo.ip)
+  udpSend(data, cb) {
+    if (!cb) cb = (error) => {
+      if (error) this.emit('error', error)
+    }
+
+    this.udp.send(data, this.udpInfo.port, this.udpInfo.ip, cb)
   }
 
   _setSpeaking(value) {
@@ -314,15 +323,13 @@ class Connection extends EventEmitter {
     this.player.sequence++
     if (this.player.sequence > MAX_SEQUENCE) this.player.sequence = 0
 
+    let packet = null
+
     switch (ENCRYPTION_MODE) {
-      case 'xsalsa20_poly1305_lite': {
-        this.nonce++
-        if (this.nonce > MAX_NONCE) this.nonce = 0
-        this.nonceBuffer.writeUInt32LE(this.nonce, 0)
+      case 'xsalsa20_poly1305': {
+        const output = Sodium.close(chunk, nonce, this.udpInfo.secretKey)
 
-        const output = Sodium.close(chunk, this.nonceBuffer, this.udpInfo.secretKey)
-
-        this.udpSend(Buffer.concat([ packetBuffer, output, this.nonceBuffer.subarray(0, 4) ]))
+        packet = Buffer.concat([ packetBuffer, output ])
 
         break
       }
@@ -330,18 +337,29 @@ class Connection extends EventEmitter {
         const random = Sodium.random(24, this.nonceBuffer)
         const output = Sodium.close(chunk, random, this.udpInfo.secretKey)
 
-        this.udpSend(Buffer.concat([ packetBuffer, output, random ]))
+        packet = Buffer.concat([ packetBuffer, output, random ])
 
         break
       }
-      case 'xsalsa20_poly1305': {
-        const output = Sodium.close(chunk, nonce, this.udpInfo.secretKey)
+      case 'xsalsa20_poly1305_lite': {
+        this.nonce++
+        if (this.nonce > MAX_NONCE) this.nonce = 0
+        this.nonceBuffer.writeUInt32LE(this.nonce, 0)
 
-        this.udpSend(Buffer.concat([ packetBuffer, output ]))
+        const output = Sodium.close(chunk, this.nonceBuffer, this.udpInfo.secretKey)
+
+        packet = Buffer.concat([ packetBuffer, output, this.nonceBuffer.subarray(0, 4) ])
 
         break
       }
     }
+
+    this.udpSend(packet, (error) => {
+      if (error) this.statistics.packetsLost++
+      else this.statistics.packetsSent++
+
+      this.statistics.packetsExpected++
+    })
   }
 
   play(audioStream) {
