@@ -289,7 +289,7 @@ class Connection extends EventEmitter {
 
       const closeCode = DISCORD_CLOSE_CODES[code]
 
-      if (closeCode.reconnect) {
+      if (closeCode?.reconnect) {
         this._updateState({ status: 'disconnected', reason: 'websocketClose', code })
         this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
 
@@ -300,8 +300,8 @@ class Connection extends EventEmitter {
       } else {
         this._destroy({ status: 'disconnected', reason: 'websocketClose', code })
 
-        if (closeCode.error !== false)
-          this.emit('error', new Error(closeCode.message))
+        if (closeCode?.error !== false)
+          this.emit('error', new Error(closeCode?.message || `WebSocket closed with code: ${code}`))
 
         return;
       }
