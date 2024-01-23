@@ -32,6 +32,7 @@ class Connection extends EventEmitter {
 
     this.guildId = obj.guildId
     this.userId = obj.userId
+    this.encryption = obj.encryption
 
     this.ws = null
 
@@ -177,10 +178,10 @@ class Connection extends EventEmitter {
 
             let dataEnd = null
 
-            switch (ENCRYPTION_MODE) {
-              case 'xsalsa20_poly1305_lite': {
-                dataEnd = data.length - 4
-                data.copy(this.nonceBuffer, 0, dataEnd)
+            switch (this.encryption) {
+              case 'xsalsa20_poly1305': {
+                dataEnd = data.length
+                data.copy(this.nonceBuffer, 0, 0, 12)
 
                 break
               }
@@ -190,9 +191,9 @@ class Connection extends EventEmitter {
 
                 break
               }
-              case 'xsalsa20_poly1305': {
-                dataEnd = data.length
-                data.copy(this.nonceBuffer, 0, 0, 12)
+              case 'xsalsa20_poly1305_lite': {
+                dataEnd = data.length - 4
+                data.copy(this.nonceBuffer, 0, dataEnd)
 
                 break
               }
@@ -239,7 +240,7 @@ class Connection extends EventEmitter {
               data: {
                 address: serverInfo.ip,
                 port: serverInfo.port,
-                mode: ENCRYPTION_MODE
+                mode: this.encryption
               }
             }
           }))
@@ -325,7 +326,7 @@ class Connection extends EventEmitter {
 
     let packet = null
 
-    switch (ENCRYPTION_MODE) {
+    switch (this.encryption) {
       case 'xsalsa20_poly1305': {
         const output = Sodium.close(chunk, nonce, this.udpInfo.secretKey)
 
