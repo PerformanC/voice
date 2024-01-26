@@ -325,9 +325,9 @@ class Connection extends EventEmitter {
     packetBuffer.copy(nonce, 0, 0, 12)
 
     this.player.timestamp += TIMESTAMP_INCREMENT
-    if (this.player.timestamp > MAX_TIMESTAMP) this.player.timestamp = 0
+    if (this.player.timestamp >= MAX_TIMESTAMP) this.player.timestamp = 0
     this.player.sequence++
-    if (this.player.sequence > MAX_SEQUENCE) this.player.sequence = 0
+    if (this.player.sequence >= MAX_SEQUENCE) this.player.sequence = 0
 
     let packet = null
 
@@ -395,7 +395,7 @@ class Connection extends EventEmitter {
     this.audioStream.destroy()
     this.audioStream = null
 
-    this._updatePlayerState({ status: 'idle', reason: reason ?? 'requested' })
+    this._updatePlayerState({ status: 'idle', reason: reason ?? 'stopped' })
 
     this.udpSend(OPUS_SILENCE_FRAME)
 
@@ -403,14 +403,14 @@ class Connection extends EventEmitter {
   }
 
   pause(reason) {
-    this._updatePlayerState({ status: 'paused', reason: reason ?? 'requested' })
+    this._updatePlayerState({ status: 'idle', reason: reason ?? 'paused' })
 
     this._setSpeaking(0)
     clearInterval(this.playInterval)
   }
 
   unpause(reason) {
-    this._updatePlayerState({ status: 'playing', reason: reason ?? 'requested' })
+    this._updatePlayerState({ status: 'playing', reason: reason ?? 'unpaused' })
 
     this._setSpeaking(1 << 0)
 

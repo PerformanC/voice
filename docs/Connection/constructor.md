@@ -34,7 +34,6 @@ A `Connection` class instance, with the following properties:
   - `status` - The status of the audio stream. Can be one of the following:
     - `idle` - The audio stream is not playing.
     - `playing` - The audio stream is playing.
-    - `paused` - The audio stream is paused.
 
 - `sessionId` - The session ID of the connection. `null` if not connected.
 
