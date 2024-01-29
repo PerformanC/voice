@@ -14,7 +14,6 @@ const TIMESTAMP_INCREMENT = (OPUS_SAMPLE_RATE / 100) * 2
 const MAX_NONCE = 2 ** 32 - 1
 const MAX_TIMESTAMP = 2 ** 32
 const MAX_SEQUENCE = 2 ** 16
-const ENCRYPTION_MODE = 'xsalsa20_poly1305_lite'
 const DISCORD_CLOSE_CODES = {
   4004: { message: 'Authentication failed.' },
   4006: { message: 'Session no longer valid.' },
