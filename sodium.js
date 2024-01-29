@@ -43,6 +43,8 @@ void (async () => {
     try {
       const lib = await import(name)
 
+      if (functions.open) return;
+
       if (name == 'libsodium-wrappers') await lib.default.ready
 
       functions.open = libraries[name](lib.default).open
