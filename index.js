@@ -122,7 +122,7 @@ class Connection extends EventEmitter {
 
     this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=4`, {
       headers: {
-        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 1.0.4)'
+        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 1.0.5)'
       }
     })
 
