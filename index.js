@@ -11,7 +11,7 @@ const OPUS_FRAME_DURATION = 20
 const OPUS_FRAME_SIZE = OPUS_SAMPLE_RATE * OPUS_FRAME_DURATION / 1000
 const OPUS_SILENCE_FRAME = Buffer.from([ 0xf8, 0xff, 0xfe ])
 const TIMESTAMP_INCREMENT = (OPUS_SAMPLE_RATE / 100) * 2
-const MAX_NONCE = 2 ** 32 - 1
+const MAX_NONCE = 2 ** 32
 const MAX_TIMESTAMP = 2 ** 32
 const MAX_SEQUENCE = 2 ** 16
 const DISCORD_CLOSE_CODES = {
@@ -322,7 +322,7 @@ class Connection extends EventEmitter {
     this.player.timestamp += TIMESTAMP_INCREMENT
     if (this.player.timestamp >= MAX_TIMESTAMP) this.player.timestamp = 0
     this.player.sequence++
-    if (this.player.sequence >= MAX_SEQUENCE) this.player.sequence = 0
+    if (this.player.sequence == MAX_SEQUENCE) this.player.sequence = 0
 
     let packet = null
 
@@ -344,7 +344,7 @@ class Connection extends EventEmitter {
       }
       case 'xsalsa20_poly1305_lite': {
         this.nonce++
-        if (this.nonce > MAX_NONCE) this.nonce = 0
+        if (this.nonce == MAX_NONCE) this.nonce = 0
         this.nonceBuffer.writeUInt32LE(this.nonce, 0)
 
         const output = Sodium.close(chunk, this.nonceBuffer, this.udpInfo.secretKey)
