@@ -15,12 +15,8 @@ const MAX_NONCE = 2 ** 32 - 1
 const MAX_TIMESTAMP = 2 ** 32
 const MAX_SEQUENCE = 2 ** 16
 const DISCORD_CLOSE_CODES = {
-  4004: { message: 'Authentication failed.' },
-  4006: { message: 'Session no longer valid.' },
-  4009: { message: 'Session timeout.' },
-  4011: { message: 'Server not found.' },
-  4014: { message: 'Disconnected.', error: false },
-  4015: { message: 'Voice server crashed.', reconnect: true },
+  4014: { error: false },
+  4015: { reconnect: true },
 }
 
 const ssrcs = {}
@@ -287,7 +283,7 @@ class Connection extends EventEmitter {
       }
     })
 
-    this.ws.on('close', (code) => {
+    this.ws.on('close', (code, reason) => {
       if (!this.ws) return;
 
       const closeCode = DISCORD_CLOSE_CODES[code]
@@ -296,7 +292,7 @@ class Connection extends EventEmitter {
         this._updateState({ status: 'disconnected', reason: 'websocketClose', code })
         this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
 
-        this.emit('reconnecting', closeCode.message)
+        this.emit('reconnecting', reason)
 
         this.pause()
         this.connect(() => this.unpause('reconnected'), true)
@@ -304,7 +300,7 @@ class Connection extends EventEmitter {
         this._destroy({ status: 'disconnected', reason: 'websocketClose', code })
 
         if (closeCode?.error !== false)
-          this.emit('error', new Error(closeCode?.message || `WebSocket closed with code: ${code}`))
+          this.emit('error', new Error(reason || `WebSocket closed with code: ${code}`))
 
         return;
       }
