@@ -1,5 +1,3 @@
-import net from 'node:net'
-import tls from 'node:tls'
 import https from 'node:https'
 import http from 'node:http'
 import crypto from 'node:crypto'
@@ -9,14 +7,21 @@ import { URL } from 'node:url'
 function parseFrameHeader(buffer) {
   let startIndex = 2
 
-  const opcode = buffer[0] & 0b00001111
-  const fin = (buffer[0] & 0b10000000) == 0b10000000
-  let payloadLength = buffer[1] & 0b01111111
+  const opcode = buffer[0] & 15
+  const fin = (buffer[0] & 128) === 128
+  let payloadLength = buffer[1] & 127
 
-  if (payloadLength == 126) {
+  let mask = null
+  if ((buffer[1] & 128) === 128) {
+    mask = buffer.subarray(startIndex, startIndex + 4)
+
+    startIndex += 4
+  }
+
+  if (payloadLength === 126) {
     startIndex += 2
     payloadLength = buffer.readUInt16BE(2)
-  } else if (payloadLength == 127) {
+  } else if (payloadLength === 127) {
     const buf = buffer.subarray(startIndex, startIndex + 8)
 
     payloadLength = buf.readUInt32BE(0) * Math.pow(2, 32) + buf.readUInt32BE(4)
@@ -24,6 +29,12 @@ function parseFrameHeader(buffer) {
   }
 
   buffer = buffer.subarray(startIndex, startIndex + payloadLength)
+
+  if (mask) {
+    for (let i = 0; i < payloadLength; i++) {
+      buffer[i] = buffer[i] ^ mask[i & 3]
+    }
+  }
 
   return {
     opcode,
@@ -40,7 +51,10 @@ class WebSocket extends EventEmitter {
     this.url = url
     this.options = options
     this.socket = null
-    this.cachedData = []
+    this.continueInfo = {
+      type: -1,
+      buffer: []
+    }
 
     this.connect()
 
@@ -49,27 +63,13 @@ class WebSocket extends EventEmitter {
 
   connect() {
     const parsedUrl = new URL(this.url)
-    const isSecure = parsedUrl.protocol == 'wss:'
+    const isSecure = parsedUrl.protocol === 'wss:'
+    const agent = isSecure ? https : http
     const key = crypto.randomBytes(16).toString('base64')
 
-    const request = (isSecure ? https : http).request((isSecure ? 'https://' : 'http://') + parsedUrl.hostname + parsedUrl.pathname + parsedUrl.search, {
+    const request = agent.request((isSecure ? 'https://' : 'http://') + parsedUrl.hostname + parsedUrl.pathname + parsedUrl.search, {
       port: parsedUrl.port || (isSecure ? 443 : 80),
-      timeout: this.options?.timeout || 0,
-      createConnection: (options) => {
-        if (isSecure) {
-          options.path = undefined
-    
-          if (options.servername && options.servername !== '') {
-            options.servername = net.isIP(options.host) ? '' : options.host
-          }
-    
-          return tls.connect(options)
-        } else {
-          options.path = options.socketPath
-    
-          return net.connect(options)
-        }
-      },
+      timeout: this.options?.timeout ?? 0,
       headers: {
         'Sec-WebSocket-Key': key,
         'Sec-WebSocket-Version': 13,
@@ -89,9 +89,9 @@ class WebSocket extends EventEmitter {
       socket.setNoDelay()
       socket.setKeepAlive(true)
 
-      if (head.length != 0) socket.unshift(head)
+      if (head.length !== 0) socket.unshift(head)
 
-      if (res.headers.upgrade && res.headers.upgrade.toLowerCase() != 'websocket') {
+      if (res.headers.upgrade.toLowerCase() !== 'websocket') {
         socket.destroy()
 
         return;
@@ -101,7 +101,7 @@ class WebSocket extends EventEmitter {
         .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
         .digest('base64')
 
-      if (res.headers['sec-websocket-accept'] != digest) {
+      if (res.headers['sec-websocket-accept'] !== digest) {
         socket.destroy()
 
         return;
@@ -112,36 +112,48 @@ class WebSocket extends EventEmitter {
 
         switch (headers.opcode) {
           case 0x0: {
-            this.cachedData.push(headers.buffer)
+            this.continueInfo.buffer.push(headers.buffer)
 
             if (headers.fin) {
-              this.emit('message', Buffer.concat(this.cachedData).toString())
+              this.emit('message', (this.continuedData === 1 ? this.continueInfo.buffer.join('') : Buffer.concat(this.continueInfo.buffer)))
 
-              this.cachedData = []
+              this.continueInfo = {
+                type: -1,
+                buffer: []
+              }
             }
 
             break
           }
-          case 0x1: {
-            this.emit('message', headers.buffer.toString())
+          case 0x1: 
+          case 0x2: {
+            if (this.continueInfo.type !== -1 && this.continueInfo.type !== headers.opcode) {
+              this.close(1002, 'Invalid continuation frame')
+              this.cleanup()
+
+              return;
+            }
+
+            if (!headers.fin) {
+              this.continueInfo.type = headers.opcode
+              this.continueInfo.buffer.push(headers.buffer)
+            } else {
+              this.emit('message', headers.opcode === 0x1 ? headers.buffer.toString('utf8') : headers.buffer)
+            }
 
             break
           }
-          case 0x2: {
-            throw new Error('Binary data is not supported.')
-          }
           case 0x8: {
-            if (headers.buffer.length == 0) {
+            if (headers.buffer.length === 0) {
               this.emit('close', 1006, '')
             } else {
               const code = headers.buffer.readUInt16BE(0)
               const reason = headers.buffer.subarray(2).toString('utf-8')
 
               this.emit('close', code, reason)
-              socket.removeAllListeners('close')
             }
 
-            socket.end()
+            this.cleanup()
 
             break
           }
@@ -150,20 +162,24 @@ class WebSocket extends EventEmitter {
             pong[0] = 0x8a
             pong[1] = 0x00
 
-            this.socket?.write(pong)
+            this.socket.write(pong)
 
             break
           }
-          case 0x10: {
+          case 0xA: {
             this.emit('pong')
           }
         }
 
         if (headers.buffer.length > headers.payloadLength)
-          this.socket?.unshift(headers.buffer)
+          this.socket.unshift(headers.buffer)
       })
 
-      socket.on('close', () => this.emit('close'))
+      socket.on('close', () => {
+        this.emit('close')
+
+        this.cleanup()
+      })
 
       this.socket = socket
 
@@ -173,11 +189,19 @@ class WebSocket extends EventEmitter {
     request.end()
   }
 
-  sendData(data, options) {
-    if (!this.socket || this.socket.destroyed) {
-      return false
+  cleanup() {
+    this.socket.destroy()
+    this.socket = null
+
+    this.continueInfo = {
+      type: -1,
+      buffer: []
     }
 
+    return true
+  }
+
+  sendData(data, options) {
     let payloadStartIndex = 2
     let payloadLength = options.len
     let mask = null
@@ -185,7 +209,7 @@ class WebSocket extends EventEmitter {
     if (options.mask) {
       mask = Buffer.allocUnsafe(4)
 
-      while ((mask[0] | mask[1] | mask[2] | mask[3]) == 0)
+      while ((mask[0] | mask[1] | mask[2] | mask[3]) === 0)
         crypto.randomFillSync(mask, 0, 4)
 
       payloadStartIndex += 4
@@ -200,18 +224,18 @@ class WebSocket extends EventEmitter {
     }
 
     const header = Buffer.allocUnsafe(payloadStartIndex)
-    header[0] = options.fin ? options.opcode | 0x80 : options.opcode
+    header[0] = options.fin ? options.opcode | 128 : options.opcode
     header[1] = payloadLength
 
-    if (payloadLength == 126) {
+    if (payloadLength === 126) {
       header.writeUInt16BE(options.len, 2)
-    } else if (payloadLength == 127) {
+    } else if (payloadLength === 127) {
       header[2] = header[3] = 0
       header.writeUIntBE(options.len, 4, 6)
     }
 
     if (options.mask) {
-      header[1] |= 0x80
+      header[1] |= 128
       header[payloadStartIndex - 4] = mask[0]
       header[payloadStartIndex - 3] = mask[1]
       header[payloadStartIndex - 2] = mask[2]
@@ -226,7 +250,7 @@ class WebSocket extends EventEmitter {
 
     return true
   }
-  
+
   send(data) {
     const payload = Buffer.from(data, 'utf-8')
 
@@ -234,11 +258,11 @@ class WebSocket extends EventEmitter {
   }
 
   close(code, reason) {
-    const data = Buffer.allocUnsafe(2 + Buffer.byteLength(reason || 'normal close'))
-    data.writeUInt16BE(code || 1000)
-    data.write(reason || 'normal close', 2)
+    const data = Buffer.allocUnsafe(2 + Buffer.byteLength(reason ?? 'normal close'))
+    data.writeUInt16BE(code ?? 1000)
+    data.write(reason ?? 'normal close', 2)
 
-    this.sendData(data, { len: data.length, fin: true, opcode: 0x08 })
+    this.sendData(data, { len: data.length, fin: true, opcode: 0x8 })
 
     return true
   }
