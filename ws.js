@@ -181,6 +181,13 @@ class WebSocket extends EventEmitter {
         this.cleanup()
       })
 
+      socket.on('error', (err) => {
+        this.emit('error', err)
+        this.emit('close')
+
+        this.cleanup()
+      })
+
       this.socket = socket
 
       this.emit('open', socket, res.headers)
