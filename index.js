@@ -370,8 +370,6 @@ class Connection extends EventEmitter {
       return;
     }
 
-    this._setSpeaking(1 << 0)
-
     audioStream.once('readable', () => {
       if (this.audioStream) {
         this.audioStream = audioStream
