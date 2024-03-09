@@ -176,14 +176,14 @@ class WebSocket extends EventEmitter {
       })
 
       socket.on('close', () => {
-        this.emit('close')
+        this.emit('close', 1006, null)
 
         this.cleanup()
       })
 
       socket.on('error', (err) => {
         this.emit('error', err)
-        this.emit('close')
+        this.emit('close', 1006, null)
 
         this.cleanup()
       })
