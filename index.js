@@ -97,7 +97,7 @@ class Connection extends EventEmitter {
     return new Promise((resolve) => {
       this.udp.once('message', (message) => {
         const data = message.readUInt16BE(0)
-        if (data != 2) return;
+        if (data !== 2) return;
 
         const packet = Buffer.from(message)
 
@@ -198,10 +198,10 @@ class Connection extends EventEmitter {
 
             let packet = Buffer.from(Sodium.open(voice, this.nonceBuffer, this.udpInfo.secretKey))
 
-            if (packet[0] == 0xbe && packet[1] == 0xde)
+            if (packet[0] === 0xbe && packet[1] === 0xde)
               packet = packet.subarray(4 + 4 * packet.readUInt16BE(2))
 
-            if (packet.compare(OPUS_SILENCE_FRAME) == 0) {
+            if (packet.compare(OPUS_SILENCE_FRAME) === 0) {
               if (userData.stream._readableState.ended) return;
 
               this.emit('speakEnd', userData.userId, ssrc)
@@ -322,7 +322,7 @@ class Connection extends EventEmitter {
     this.player.timestamp += TIMESTAMP_INCREMENT
     if (this.player.timestamp >= MAX_TIMESTAMP) this.player.timestamp = 0
     this.player.sequence++
-    if (this.player.sequence == MAX_SEQUENCE) this.player.sequence = 0
+    if (this.player.sequence === MAX_SEQUENCE) this.player.sequence = 0
 
     let packet = null
 
@@ -344,7 +344,7 @@ class Connection extends EventEmitter {
       }
       case 'xsalsa20_poly1305_lite': {
         this.nonce++
-        if (this.nonce == MAX_NONCE) this.nonce = 0
+        if (this.nonce === MAX_NONCE) this.nonce = 0
         this.nonceBuffer.writeUInt32LE(this.nonce, 0)
 
         const output = Sodium.close(chunk, this.nonceBuffer, this.udpInfo.secretKey)
@@ -422,7 +422,7 @@ class Connection extends EventEmitter {
     clearInterval(this.hbInterval)
     clearInterval(this.playInterval)
 
-    if (this.ws) {
+    if (this.ws && !this.ws.closing) {
       this.ws.close(code, reason)
       this.ws.removeAllListeners()
       this.ws = null
@@ -457,25 +457,22 @@ class Connection extends EventEmitter {
     this.sessionId = obj.session_id
   }
 
-  _voiceServerUpdate(obj) {
+  voiceServerUpdate(obj) {
+    if (this.voiceServer?.token === obj.token && this.voiceServer?.endpoint === obj.endpoint) return;
+
     this.voiceServer = {
       token: obj.token,
       endpoint: obj.endpoint
     }
 
-    this._updateState({ status: 'connecting' })
-  }
-
-  voiceServerUpdate(obj) {
-    if (this.voiceServer?.token == obj.token && this.voiceServer?.endpoint == obj.endpoint) return;
-
-    this._voiceServerUpdate(obj)
-
     if (this.ws)  {
       this._destroyConnection(4015, 'Voice server update')
 
-      this.connect(() => this.unpause('reconnected'), false)
-    }
+      this.connect(() => {
+        if (this.audioStream) this.unpause('reconnected')
+        else this._updatePlayerState({ status: 'idle', reason: 'reconnected' })
+      }, false)
+    } else this._updateState({ status: 'connecting' })
   }
 }
 

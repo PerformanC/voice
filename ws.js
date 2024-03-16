@@ -255,7 +255,7 @@ class WebSocket extends EventEmitter {
       }
     }
 
-    this.socket.write(Buffer.concat([header, data]))
+    if (this.socket) this.socket.write(Buffer.concat([ header, data ]))
 
     return true
   }
