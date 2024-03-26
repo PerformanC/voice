@@ -35,19 +35,23 @@ const userId = '123123123'
 const connection =  perfcVoice.joinVoiceChannel({ guildId, userId, encryption: 'xsalsa20_poly1305_lite' })
 
 client.ws.on('VOICE_STATE_UPDATE', (data) => {
-  if (data.guild_id == guildId && data.user_id == userId) {
+  if (data.guild_id == guildId && data.member.user.id == userId) {
     connection.voiceStateUpdate({
-      sessionId: data.session_id
+      guild_id: guildId,
+      user_id: userId,
+      session_id: data.session_id
     })
   }
 })
 
 client.ws.on('VOICE_SERVER_UPDATE', (data) => {
-  if (data.guild_id == guildId && data.user_id == userId) {
+  if (data.guild_id == guildId) {
     connection.voiceServerUpdate({
-      token: data.token,
-      endpoint: data.endpoint
+      token: buffer.token,
+      endpoint: buffer.endpoint
     })
+
+    connection.connect(() => connection.play(stream))
   }
 })
 
@@ -64,7 +68,6 @@ connection.on('playerStateChange', (_oldState, newState) => {
     console.log('Playing audio')
 })
 
-connection.connect(() => connection.play(stream))
 ```
 
 ## Documentation
