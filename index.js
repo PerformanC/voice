@@ -15,8 +15,9 @@ const MAX_NONCE = 2 ** 32
 const MAX_TIMESTAMP = 2 ** 32
 const MAX_SEQUENCE = 2 ** 16
 const DISCORD_CLOSE_CODES = {
+  1006: { reconnect: true },
   4014: { error: false },
-  4015: { reconnect: true },
+  4015: { reconnect: true }
 }
 
 const ssrcs = {}
@@ -289,7 +290,6 @@ class Connection extends EventEmitter {
       const closeCode = DISCORD_CLOSE_CODES[code]
 
       if (closeCode?.reconnect) {
-        this._updateState({ status: 'disconnected', reason: 'websocketClose', code })
         this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
 
         this.emit('reconnecting', reason)
@@ -298,9 +298,6 @@ class Connection extends EventEmitter {
         this.connect(() => this.unpause('reconnected'), true)
       } else {
         this._destroy({ status: 'disconnected', reason: 'websocketClose', code })
-
-        if (closeCode?.error !== false)
-          this.emit('error', new Error(reason || `WebSocket closed with code: ${code}`))
 
         return;
       }
