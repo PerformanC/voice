@@ -294,8 +294,10 @@ class Connection extends EventEmitter {
 
         this.emit('reconnecting', reason)
 
-        this.pause()
-        this.connect(() => this.unpause('reconnected'), true)
+        if (this.audioStream) {
+          this.pause()
+          this.connect(() => this.unpause('reconnected'), true)
+        }
       } else {
         this._destroy({ status: 'disconnected', reason: 'websocketClose', code })
 
