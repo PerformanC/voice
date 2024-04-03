@@ -2,7 +2,7 @@ import EventEmitter from 'node:events'
 import dgram from 'node:dgram'
 import { PassThrough } from 'node:stream'
 
-import WebSocket from './ws.js'
+import WebSocket from '@performanc/pwsl'
 import Sodium from './sodium.js'
 
 const nonce = Buffer.alloc(24)

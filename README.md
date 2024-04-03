@@ -8,6 +8,10 @@ Performant Discord voice API client for ES6 Node.js
 - Lightweight
 - Stable
 
+## Dependencies
+
+- [@performanc/pwsl](https://github.com/PerformanC/Internals#PWSL)
+
 ## Installation
 
 ### Release
