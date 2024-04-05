@@ -13,6 +13,9 @@ connection.play(stream)
 > [!WARNING]  
 > The connection must be initialized before calling this function. Always check if `connection.udp != null` before calling this function. Make sure that the stream is an Opus stream.
 
+> [!IMPORTANT]
+> The stream real ending MUST end with 0 (as Buffer), otherwise it will persist with the interval to play packets.
+
 ## Parameters
 
 - `stream` - The stream to play.

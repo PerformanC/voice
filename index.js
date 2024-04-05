@@ -19,6 +19,7 @@ const DISCORD_CLOSE_CODES = {
   4014: { error: false },
   4015: { reconnect: true }
 }
+const STREAM_END = Buffer.alloc(1)
 
 const ssrcs = {}
 
@@ -411,7 +412,8 @@ class Connection extends EventEmitter {
     this.playInterval = setInterval(() => {
       const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
 
-      if (!chunk) return this.stop('finished')
+      if (chunk === STREAM_END) return this.stop('finished')
+      if (!chunk) return;
 
       this.sendAudioChunk(packetBuffer, chunk)
     }, OPUS_FRAME_DURATION)
