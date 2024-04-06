@@ -33,4 +33,8 @@ Nothing.
 
 - Initial implementation
 
+### 2.0.0
+
+- Requires the stream to end with 0 (as Buffer) to stop playing.
+
 </details>
