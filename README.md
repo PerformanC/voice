@@ -55,7 +55,6 @@ client.ws.on('VOICE_SERVER_UPDATE', (data) => {
       endpoint: buffer.endpoint
     })
 
-    // Stream must end with a 0 (as Buffer)
     connection.connect(() => connection.play(stream))
   }
 })

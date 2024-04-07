@@ -37,4 +37,8 @@ Nothing.
 
 - Requires the stream to end with 0 (as Buffer) to stop playing.
 
+### 2.0.1
+
+- Instead of requiring the stream to end with 0, it now requires the stream to emit the `end` event when it finished buffering.
+
 </details>

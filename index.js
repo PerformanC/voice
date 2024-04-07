@@ -19,7 +19,6 @@ const DISCORD_CLOSE_CODES = {
   4014: { error: false },
   4015: { reconnect: true }
 }
-const STREAM_END = Buffer.alloc(1)
 
 const ssrcs = {}
 
@@ -124,7 +123,7 @@ class Connection extends EventEmitter {
 
     this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=4`, {
       headers: {
-        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.0.0)'
+        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.0.1)'
       }
     })
 
@@ -408,15 +407,17 @@ class Connection extends EventEmitter {
     this._setSpeaking(1 << 0)
 
     const packetBuffer = Buffer.allocUnsafe(12)
+    let shouldStop = false
 
     this.playInterval = setInterval(() => {
       const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
 
-      if (chunk === STREAM_END) return this.stop('finished')
-      if (!chunk) return;
-
-      this.sendAudioChunk(packetBuffer, chunk)
+      if (!chunk && shouldStop) return this.stop('finished')
+      
+      if (chunk) this.sendAudioChunk(packetBuffer, chunk)
     }, OPUS_FRAME_DURATION)
+
+    this.audioStream.once('end', () => shouldStop = true)
   }
 
   _destroyConnection(code, reason) {
