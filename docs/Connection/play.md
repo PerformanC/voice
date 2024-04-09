@@ -41,4 +41,8 @@ Nothing.
 
 - Instead of requiring the stream to end with 0, it now requires the stream to emit the `end` event when it finished buffering.
 
+### 2.0.2
+
+- Due to incompabilities with Node.js with `end` event, now it was renamed to `finishBuffering`.
+
 </details>

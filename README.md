@@ -55,6 +55,7 @@ client.ws.on('VOICE_SERVER_UPDATE', (data) => {
       endpoint: buffer.endpoint
     })
 
+    stream.on('end', () => stream.emit('finishBuffering')) /* Allow it to end once it finds null */
     connection.connect(() => connection.play(stream))
   }
 })
