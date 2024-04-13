@@ -456,6 +456,16 @@ class Connection extends EventEmitter {
   _destroy(state, destroyStream) {
     this._destroyConnection(1000, 'Normal closure')
 
+    if (this.hbInterval) {
+      clearInterval(this.hbInterval)
+      this.hbInterval = null
+    }
+
+    if (this.playInterval) {
+      clearInterval(this.playInterval)
+      this.playInterval = null
+    }
+
     this.udpInfo = null
     this.voiceServer = null
     this.sessionId = null
