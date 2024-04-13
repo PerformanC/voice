@@ -371,6 +371,12 @@ class Connection extends EventEmitter {
 
     audioStream.once('readable', () => {
       if (this.audioStream && this.playInterval) {
+        this.statistics = {
+          packetsSent: 0,
+          packetsLost: 0,
+          packetsExpected: 0
+        }
+
         this.audioStream = audioStream
 
         return;
