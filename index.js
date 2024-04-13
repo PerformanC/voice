@@ -290,14 +290,13 @@ class Connection extends EventEmitter {
       const closeCode = DISCORD_CLOSE_CODES[code]
 
       if (closeCode?.reconnect) {
+        this._destroyConnection(code, reason)
+
         this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
 
-        this.emit('reconnecting', reason)
-
-        if (this.audioStream) {
-          this.pause()
-          this.connect(() => this.unpause('reconnected'), true)
-        }
+        this.connect(() => {
+          if (this.audioStream) this.unpause('reconnected')
+        }, true)
       } else {
         this._destroy({ status: 'disconnected', reason: 'websocketClose', code }, false)
 
