@@ -34,4 +34,8 @@ Nothing.
 
 - Added optional `reason` parameter
 
+### 2.0.3
+
+- This now resets `connection.statisticc` to its default values.
+
 </details>

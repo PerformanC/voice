@@ -386,8 +386,16 @@ class Connection extends EventEmitter {
 
   stop(reason) {
     clearInterval(this.playInterval)
+    this.playInterval = null
+
     this.audioStream.destroy()
     this.audioStream = null
+
+    this.statistics = {
+      packetsSent: 0,
+      packetsLost: 0,
+      packetsExpected: 0
+    }
 
     this._updatePlayerState({ status: 'idle', reason: reason ?? 'stopped' })
 
@@ -423,7 +431,10 @@ class Connection extends EventEmitter {
 
   _destroyConnection(code, reason) {
     clearInterval(this.hbInterval)
+    this.hbInterval = null
+
     clearInterval(this.playInterval)
+    this.playInterval = null
 
     this.player = {
       sequence: 0,
