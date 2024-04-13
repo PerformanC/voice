@@ -409,17 +409,16 @@ class Connection extends EventEmitter {
     this._setSpeaking(1 << 0)
 
     const packetBuffer = Buffer.allocUnsafe(12)
-    let shouldStop = false
 
     this.playInterval = setInterval(() => {
       const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
 
-      if (!chunk && shouldStop) return this.stop('finished')
+      if (!chunk && this.audioStream.canStop) return this.stop('finished')
       
       if (chunk) this.sendAudioChunk(packetBuffer, chunk)
     }, OPUS_FRAME_DURATION)
 
-    this.audioStream.once('finishBuffering', () => shouldStop = true)
+    this.audioStream.once('finishBuffering', () => this.audioStream.canStop = true)
   }
 
   _destroyConnection(code, reason) {
