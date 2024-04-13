@@ -35,4 +35,8 @@ Nothing.
 
 - Initial implementation
 
+### 2.0.3
+
+- `connecting` state won't be emitted immediatly after calling this function, but after using `connection.connect()`.
+
 </details>

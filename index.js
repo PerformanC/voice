@@ -119,11 +119,11 @@ class Connection extends EventEmitter {
   }
 
   connect(cb, reconnection) {
-    if (reconnection) this._updateState({ status: 'connecting' })
+    this._updateState({ status: 'connecting' })
 
     this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=4`, {
       headers: {
-        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.0.2)'
+        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.0.3)'
       }
     })
 
@@ -254,6 +254,8 @@ class Connection extends EventEmitter {
             this._updatePlayerState({ status: 'idle', reason: 'connected' })
           }
 
+          if (this.audioStream) this.unpause('reconnected')
+
           break
         }
         case 5: {
@@ -299,7 +301,7 @@ class Connection extends EventEmitter {
           this.connect(() => this.unpause('reconnected'), true)
         }
       } else {
-        this._destroy({ status: 'disconnected', reason: 'websocketClose', code })
+        this._destroy({ status: 'disconnected', reason: 'websocketClose', code }, false)
 
         return;
       }
@@ -370,7 +372,7 @@ class Connection extends EventEmitter {
     }
 
     audioStream.once('readable', () => {
-      if (this.audioStream) {
+      if (this.audioStream && this.playInterval) {
         this.audioStream = audioStream
 
         return;
@@ -424,6 +426,11 @@ class Connection extends EventEmitter {
     clearInterval(this.hbInterval)
     clearInterval(this.playInterval)
 
+    this.player = {
+      sequence: 0,
+      timestamp: 0
+    }
+
     if (this.ws && !this.ws.closing) {
       this.ws.close(code, reason)
       this.ws.removeAllListeners()
@@ -436,13 +443,13 @@ class Connection extends EventEmitter {
     }
   }
 
-  _destroy(state) {
+  _destroy(state, destroyStream) {
     this._destroyConnection(1000, 'Normal closure')
 
     this.udpInfo = null
     this.voiceServer = null
     this.sessionId = null
-    if (this.audioStream) {
+    if (this.audioStream && destroyStream) {
       this.audioStream.destroy()
       this.audioStream = null
     }
@@ -452,7 +459,7 @@ class Connection extends EventEmitter {
   }
 
   destroy() {
-    this._destroy({ status: 'destroyed' })
+    this._destroy({ status: 'destroyed' }, true)
   }
 
   voiceStateUpdate(obj) {
@@ -466,15 +473,6 @@ class Connection extends EventEmitter {
       token: obj.token,
       endpoint: obj.endpoint
     }
-
-    if (this.ws)  {
-      this._destroyConnection(4015, 'Voice server update')
-
-      this.connect(() => {
-        if (this.audioStream) this.unpause('reconnected')
-        else this._updatePlayerState({ status: 'idle', reason: 'reconnected' })
-      }, false)
-    } else this._updateState({ status: 'connecting' })
   }
 }
 

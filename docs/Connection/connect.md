@@ -32,4 +32,8 @@ Nothing.
 
 - Initial implementation
 
+### 2.0.3
+
+- `connecting` state will always be emitted after calling this function.
+
 </details>
