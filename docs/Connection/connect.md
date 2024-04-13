@@ -15,6 +15,9 @@ connection.connect(() => {
 > [!WARNING]  
 > An error will be thrown if `voiceStateUpdate` and `voiceServerUpdate` were not called before calling this function.
 
+> [!NOTE]
+> When re-connecting after voice channel move, you must call `connection.play()` after calling this function.
+
 ## Parameters
 
 - `callback` - A callback that is called when the connection is established.

@@ -254,8 +254,6 @@ class Connection extends EventEmitter {
             this._updatePlayerState({ status: 'idle', reason: 'connected' })
           }
 
-          if (this.audioStream) this.unpause('reconnected')
-
           break
         }
         case 5: {
