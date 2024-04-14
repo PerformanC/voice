@@ -119,11 +119,13 @@ class Connection extends EventEmitter {
   }
 
   connect(cb, reconnection) {
+    if (this.ws) this._destroyConnection(1000, 'Normal closure')
+
     this._updateState({ status: 'connecting' })
 
     this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=4`, {
       headers: {
-        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.0.3)'
+        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.0.4)'
       }
     })
 
@@ -392,6 +394,7 @@ class Connection extends EventEmitter {
     this.playInterval = null
 
     this.audioStream.destroy()
+    this.audioStream.removeAllListeners('finishBuffering')
     this.audioStream = null
 
     this.statistics = {
@@ -433,11 +436,15 @@ class Connection extends EventEmitter {
   }
 
   _destroyConnection(code, reason) {
-    clearInterval(this.hbInterval)
-    this.hbInterval = null
+    if (this.hbInterval) {
+      clearInterval(this.hbInterval)
+      this.hbInterval = null
+    }
 
-    clearInterval(this.playInterval)
-    this.playInterval = null
+    if (this.playInterval) {
+      clearInterval(this.playInterval)
+      this.playInterval = null
+    }
 
     this.player = {
       sequence: 0,
@@ -464,6 +471,7 @@ class Connection extends EventEmitter {
     this.sessionId = null
     if (this.audioStream && destroyStream) {
       this.audioStream.destroy()
+      this.audioStream.removeAllListeners('finishBuffering')
       this.audioStream = null
     }
 
