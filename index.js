@@ -243,18 +243,15 @@ class Connection extends EventEmitter {
             }
           }))
 
-          this._updateState({ status: 'ready' })
-
           break
         }
         case 4: {
           this.udpInfo.secretKey = new Uint8Array(payload.d.secret_key)
 
           if (cb) cb()
-          else {
-            this._updateState({ status: 'connected' })
-            this._updatePlayerState({ status: 'idle', reason: 'connected' })
-          }
+
+          this._updateState({ status: 'connected' })
+          this._updatePlayerState({ status: 'idle', reason: 'connected' })
 
           break
         }
@@ -394,7 +391,7 @@ class Connection extends EventEmitter {
     this.playInterval = null
 
     this.audioStream.destroy()
-    this.audioStream.removeAllListeners('finishBuffering')
+    this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
     this.audioStream = null
 
     this.statistics = {
@@ -417,6 +414,10 @@ class Connection extends EventEmitter {
     clearInterval(this.playInterval)
   }
 
+  _markAsStoppable() {
+    this.audioStream.canStop = true
+  }
+
   unpause(reason) {
     this._updatePlayerState({ status: 'playing', reason: reason ?? 'unpaused' })
 
@@ -432,7 +433,7 @@ class Connection extends EventEmitter {
       if (chunk) this.sendAudioChunk(packetBuffer, chunk)
     }, OPUS_FRAME_DURATION)
 
-    this.audioStream.once('finishBuffering', () => this.audioStream.canStop = true)
+    this.audioStream.once('finishBuffering', () => this._markAsStoppable())
   }
 
   _destroyConnection(code, reason) {
@@ -471,7 +472,7 @@ class Connection extends EventEmitter {
     this.sessionId = null
     if (this.audioStream && destroyStream) {
       this.audioStream.destroy()
-      this.audioStream.removeAllListeners('finishBuffering')
+      this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
       this.audioStream = null
     }
 
