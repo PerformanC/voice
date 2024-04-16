@@ -377,6 +377,9 @@ class Connection extends EventEmitter {
 
         this.audioStream = audioStream
 
+        this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
+        this.audioStream.once('finishBuffering', () => this._markAsStoppable())
+
         return;
       }
 
