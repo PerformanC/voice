@@ -55,13 +55,15 @@ class Connection extends EventEmitter {
 
     this.player = {
       sequence: 0,
-      timestamp: 0
+      timestamp: 0,
+      nextPacket: 0
     }
 
     this.nonce = 0
     this.nonceBuffer = Buffer.alloc(24)
+    this.packetBuffer = Buffer.allocUnsafe(12)
 
-    this.playInterval = null
+    this.playTimeout = null
     this.audioStream = null
   }
 
@@ -306,15 +308,15 @@ class Connection extends EventEmitter {
     this.ws.on('error', (error) => this.emit('error', error))
   }
 
-  sendAudioChunk(packetBuffer, chunk) {
-    packetBuffer.writeUInt8(0x80, 0)
-    packetBuffer.writeUInt8(0x78, 1)
+  sendAudioChunk(chunk) {
+    this.packetBuffer.writeUInt8(0x80, 0)
+    this.packetBuffer.writeUInt8(0x78, 1)
 
-    packetBuffer.writeUInt16BE(this.player.sequence, 2, 2)
-    packetBuffer.writeUInt32BE(this.player.timestamp, 4, 4)
-    packetBuffer.writeUInt32BE(this.udpInfo.ssrc, 8, 4)
+    this.packetBuffer.writeUInt16BE(this.player.sequence, 2, 2)
+    this.packetBuffer.writeUInt32BE(this.player.timestamp, 4, 4)
+    this.packetBuffer.writeUInt32BE(this.udpInfo.ssrc, 8, 4)
 
-    packetBuffer.copy(nonce, 0, 0, 12)
+    this.packetBuffer.copy(nonce, 0, 0, 12)
 
     this.player.timestamp += TIMESTAMP_INCREMENT
     if (this.player.timestamp >= MAX_TIMESTAMP) this.player.timestamp = 0
@@ -327,7 +329,7 @@ class Connection extends EventEmitter {
       case 'xsalsa20_poly1305': {
         const output = Sodium.close(chunk, nonce, this.udpInfo.secretKey)
 
-        packet = Buffer.concat([ packetBuffer, output ])
+        packet = Buffer.concat([ this.packetBuffer, output ])
 
         break
       }
@@ -335,7 +337,7 @@ class Connection extends EventEmitter {
         const random = Sodium.random(24, this.nonceBuffer)
         const output = Sodium.close(chunk, random, this.udpInfo.secretKey)
 
-        packet = Buffer.concat([ packetBuffer, output, random ])
+        packet = Buffer.concat([ this.packetBuffer, output, random ])
 
         break
       }
@@ -346,7 +348,7 @@ class Connection extends EventEmitter {
 
         const output = Sodium.close(chunk, this.nonceBuffer, this.udpInfo.secretKey)
 
-        packet = Buffer.concat([ packetBuffer, output, this.nonceBuffer.subarray(0, 4) ])
+        packet = Buffer.concat([ this.packetBuffer, output, this.nonceBuffer.subarray(0, 4) ])
 
         break
       }
@@ -368,7 +370,7 @@ class Connection extends EventEmitter {
     }
 
     audioStream.once('readable', () => {
-      if (this.audioStream && this.playInterval) {
+      if (this.audioStream && this.playTimeout) {
         this.statistics = {
           packetsSent: 0,
           packetsLost: 0,
@@ -390,8 +392,8 @@ class Connection extends EventEmitter {
   }
 
   stop(reason) {
-    clearInterval(this.playInterval)
-    this.playInterval = null
+    clearTimeout(this.playTimeout)
+    this.playTimeout = null
 
     this.audioStream.destroy()
     this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
@@ -414,11 +416,24 @@ class Connection extends EventEmitter {
     this._updatePlayerState({ status: 'idle', reason: reason ?? 'paused' })
 
     this._setSpeaking(0)
-    clearInterval(this.playInterval)
+    clearTimeout(this.playTimeout)
   }
 
   _markAsStoppable() {
     this.audioStream.canStop = true
+  }
+
+  _packetInterval() {
+    this.playTimeout = setTimeout(() => {
+      const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
+
+      if (!chunk && this.audioStream.canStop) return this.stop('finished')
+
+      if (chunk) this.sendAudioChunk(chunk)
+    
+      this.player.nextPacket += OPUS_FRAME_DURATION
+      this._packetInterval()
+    }, this.player.nextPacket - Date.now())
   }
 
   unpause(reason) {
@@ -426,16 +441,9 @@ class Connection extends EventEmitter {
 
     this._setSpeaking(1 << 0)
 
-    const packetBuffer = Buffer.allocUnsafe(12)
-
-    this.playInterval = setInterval(() => {
-      const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
-
-      if (!chunk && this.audioStream.canStop) return this.stop('finished')
-      
-      if (chunk) this.sendAudioChunk(packetBuffer, chunk)
-    }, OPUS_FRAME_DURATION)
-
+    this.player.nextPacket = Date.now() + OPUS_FRAME_DURATION
+    this._packetInterval()
+    
     this.audioStream.once('finishBuffering', () => this._markAsStoppable())
   }
 
@@ -445,14 +453,15 @@ class Connection extends EventEmitter {
       this.hbInterval = null
     }
 
-    if (this.playInterval) {
-      clearInterval(this.playInterval)
-      this.playInterval = null
+    if (this.playTimeout) {
+      clearTimeout(this.playTimeout)
+      this.playTimeout = null
     }
 
     this.player = {
       sequence: 0,
-      timestamp: 0
+      timestamp: 0,
+      nextPacket: 0
     }
 
     if (this.ws && !this.ws.closing) {
