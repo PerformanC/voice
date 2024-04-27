@@ -1,21 +1,21 @@
-const libraries = {
+let libraries = {
   'sodium-native': (sodium) => ({
     open: (buffer, nonce, key) => {
       const output = Buffer.allocUnsafe(buffer.length - sodium.crypto_secretbox_MACBYTES)
       sodium.crypto_secretbox_open_easy(output, buffer, nonce, key)
-
+  
       return output
     },
     close: (buffer, nonce, key) => {
       const output = Buffer.allocUnsafe(buffer.length + sodium.crypto_secretbox_MACBYTES)
       sodium.crypto_secretbox_easy(output, buffer, nonce, key)
-
+  
       return output
     },
     random: (number) => {
       const output = Buffer.allocUnsafe(number)
       sodium.randombytes_buf(output)
-
+  
       return output 
     }
   }),
@@ -29,6 +29,11 @@ const libraries = {
     close: sodium.secretbox,
     random: sodium.randombytes_buf
   })
+}
+
+libraries = {
+  ...libraries,
+  'sodium-javascript': libraries['sodium-native'],
 }
 
 const functions = {
@@ -52,7 +57,7 @@ void (async () => {
       functions.random = libraries[name](lib.default).random
     } catch {}
 
-    if (index == 2 && !functions.open) {
+    if (index == libraries.length - 1 && !functions.open) {
       throw new Error('Could not load any sodium library')
     }
 
