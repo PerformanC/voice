@@ -100,4 +100,9 @@ A `Connection` class instance, with the following properties:
 - Added `encryption` property and parameter
 - Added `statistics` property
 
+## 2.0.5
+
+- Renamed `websocketClose` reason of `disconnected` state to `closed`
+- Added `closeReason` state property
+
 </details>
