@@ -29,11 +29,25 @@ A `Connection` class instance, with the following properties:
     - `connecting` - The connection is connecting to the Discord voice server.
     - `connected` - The connection is connected to the Discord voice server.
     - `reconnecting` - The connection is reconnecting to the Discord voice server.
+  - `reason` - The reason of the connection status. `undefined` if not connected.
+    - `closed` - The connection has been closed.
+    - `connected` - The connection is connected to the Discord voice server.
+    - `reconnecting` - The connection is reconnecting to the Discord voice server.
+    - `destroyed` - The connection has been destroyed.
+    - ... - Allows custom reasons.
+  - `code` - The code of the connection status. Only appears if `reason` is `closed`.
+    - All [statuses sent by Discord Voice Gateway](https://discord.com/developers/docs/topics/opcodes-and-status-codes#voice-voice-close-event-codes) save `4015`.
 
 - `playerState` - An object containing the following properties:
   - `status` - The status of the audio stream. Can be one of the following:
     - `idle` - The audio stream is not playing.
     - `playing` - The audio stream is playing.
+  - `reason` - The reason of the audio stream status. `undefined` if not playing.
+    - `stopped` - The audio stream has been stopped.
+    - `paused` - The audio stream has been paused.
+    - `unpaused` - The audio stream has been unpaused.
+    - `destroyed` - The connection has been destroyed.
+    - ... - Allows custom reasons.
 
 - `sessionId` - The session ID of the connection. `null` if not connected.
 

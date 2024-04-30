@@ -121,7 +121,12 @@ class Connection extends EventEmitter {
   }
 
   connect(cb, reconnection) {
-    if (this.ws) this._destroyConnection(1000, 'Normal closure')
+    if (this.ws) {
+      this._destroyConnection(1000, 'Normal close')
+
+      this._updateState({ status: 'disconnected', reason: 'closed', code: 4014 }) 
+      this._updatePlayerState({ status: 'idle', reason: 'destroyed' })
+    }
 
     this._updateState({ status: 'connecting' })
 
@@ -299,7 +304,7 @@ class Connection extends EventEmitter {
           if (this.audioStream) this.unpause('reconnected')
         }, true)
       } else {
-        this._destroy({ status: 'disconnected', reason: 'websocketClose', code }, false)
+        this._destroy({ status: 'disconnected', reason: 'closed', code }, false)
 
         return;
       }
