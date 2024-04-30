@@ -124,7 +124,7 @@ class Connection extends EventEmitter {
     if (this.ws) {
       this._destroyConnection(1000, 'Normal close')
 
-      this._updateState({ status: 'disconnected', reason: 'closed', code: 4014 }) 
+      this._updateState({ status: 'disconnected', reason: 'closed', code: 4014, closeReason: 'Disconnected.' }) 
       this._updatePlayerState({ status: 'idle', reason: 'destroyed' })
     }
 
@@ -304,7 +304,7 @@ class Connection extends EventEmitter {
           if (this.audioStream) this.unpause('reconnected')
         }, true)
       } else {
-        this._destroy({ status: 'disconnected', reason: 'closed', code }, false)
+        this._destroy({ status: 'disconnected', reason: 'closed', code, closeReason: reason }, false)
 
         return;
       }

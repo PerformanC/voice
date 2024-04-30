@@ -37,6 +37,8 @@ A `Connection` class instance, with the following properties:
     - ... - Allows custom reasons.
   - `code` - The code of the connection status. Only appears if `reason` is `closed`.
     - All [statuses sent by Discord Voice Gateway](https://discord.com/developers/docs/topics/opcodes-and-status-codes#voice-voice-close-event-codes) save `4015`.
+  - `closeReason` - The reason of the connection status. Only appears if `reason` is `closed`.
+    - All [reasons sent by Discord Voice Gateway](https://discord.com/developers/docs/topics/opcodes-and-status-codes#voice-voice-close-event-codes) save `Voice server crashed`.
 
 - `playerState` - An object containing the following properties:
   - `status` - The status of the audio stream. Can be one of the following:
