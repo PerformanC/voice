@@ -384,8 +384,8 @@ class Connection extends EventEmitter {
 
         this.audioStream = audioStream
 
-        this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
-        this.audioStream.once('finishBuffering', () => this._markAsStoppable())
+          this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
+          this.audioStream.once('finishBuffering', () => this._markAsStoppable())
 
         return;
       }
@@ -449,7 +449,7 @@ class Connection extends EventEmitter {
     this.player.nextPacket = Date.now() + OPUS_FRAME_DURATION
     this._packetInterval()
     
-    this.audioStream.once('finishBuffering', () => this._markAsStoppable())
+    if (!this.audioStream.canStop) this.audioStream.once('finishBuffering', () => this._markAsStoppable())
   }
 
   _destroyConnection(code, reason) {
