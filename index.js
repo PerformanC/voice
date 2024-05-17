@@ -384,8 +384,10 @@ class Connection extends EventEmitter {
 
         this.audioStream = audioStream
 
+        if (!this.audioStream.canStop) {
           this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
           this.audioStream.once('finishBuffering', () => this._markAsStoppable())
+        }
 
         return;
       }
@@ -401,7 +403,7 @@ class Connection extends EventEmitter {
     this.playTimeout = null
 
     this.audioStream.destroy()
-    this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
+    this.audioStream.removeAllListeners()
     this.audioStream = null
 
     this.statistics = {
@@ -489,7 +491,7 @@ class Connection extends EventEmitter {
     this.sessionId = null
     if (this.audioStream && destroyStream) {
       this.audioStream.destroy()
-      this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
+      this.audioStream.removeAllListeners()
       this.audioStream = null
     }
 
