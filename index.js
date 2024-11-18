@@ -1,5 +1,6 @@
 import EventEmitter from 'node:events'
 import dgram from 'node:dgram'
+import crypto from 'node:crypto'
 import { PassThrough } from 'node:stream'
 
 import WebSocket from '@performanc/pwsl'
@@ -19,6 +20,9 @@ const DISCORD_CLOSE_CODES = {
   4014: { error: false },
   4015: { reconnect: true }
 }
+const HEADER_EXTENSION_BYTE = Buffer.from([ 0xbe, 0xde ])
+const UNPADDED_NONCE_LENGTH = 4
+const AUTH_TAG_LENGTH = 16
 
 const ssrcs = {}
 
@@ -60,7 +64,7 @@ class Connection extends EventEmitter {
     }
 
     this.nonce = 0
-    this.nonceBuffer = Buffer.alloc(24)
+    this.nonceBuffer = this.encryption === 'aead_aes256_gcm_rtpsize' ? Buffer.alloc(12) : Buffer.alloc(24)
     this.packetBuffer = Buffer.allocUnsafe(12)
 
     this.playTimeout = null
@@ -132,7 +136,7 @@ class Connection extends EventEmitter {
 
     this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=4`, {
       headers: {
-        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.0.5)'
+        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.1.0)'
       }
     })
 
@@ -181,35 +185,45 @@ class Connection extends EventEmitter {
 
             if (!userData || !this.udpInfo.secretKey) return;
 
-            let dataEnd = null
+            data.copy(this.nonceBuffer, 0, data.length - UNPADDED_NONCE_LENGTH)
 
+            let headerSize = 12
+            const first = data.readUint8()
+            if ((first >> 4) & 0x01) headerSize += 4
+
+            const header = data.subarray(0, headerSize)
+
+            const encrypted = data.subarray(headerSize, data.length - AUTH_TAG_LENGTH - UNPADDED_NONCE_LENGTH)
+            const authTag = data.subarray(
+              data.length - AUTH_TAG_LENGTH - UNPADDED_NONCE_LENGTH,
+              data.length - UNPADDED_NONCE_LENGTH
+            )
+
+            let packet = null
             switch (this.encryption) {
-              case 'xsalsa20_poly1305': {
-                dataEnd = data.length
-                data.copy(this.nonceBuffer, 0, 0, 12)
-
-                break
+              case 'aead_aes256_gcm_rtpsize': {
+                const decipheriv = crypto.createDecipheriv('aes-256-gcm', this.udpInfo.secretKey, this.nonceBuffer)
+                decipheriv.setAAD(header)
+                decipheriv.setAuthTag(authTag)
+        
+                packet = Buffer.concat([ decipheriv.update(encrypted), decipheriv.final() ])
               }
-              case 'xsalsa20_poly1305_suffix': {
-                dataEnd = data.length - 24
-                data.copy(this.nonceBuffer, 0, dataEnd)
-
-                break
-              }
-              case 'xsalsa20_poly1305_lite': {
-                dataEnd = data.length - 4
-                data.copy(this.nonceBuffer, 0, dataEnd)
-
-                break
+              case 'aead_xchacha20_poly1305_rtpsize': {
+                packet = Buffer.from(
+                  Sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
+                    Buffer.concat([ encrypted, authTag ]),
+                    header,
+                    this.nonceBuffer,
+                    this.udpInfo.secretKey
+                  )
+                )
               }
             }
 
-            const voice = data.subarray(12, dataEnd)
-
-            let packet = Buffer.from(Sodium.open(voice, this.nonceBuffer, this.udpInfo.secretKey))
-
-            if (packet[0] === 0xbe && packet[1] === 0xde)
-              packet = packet.subarray(4 + 4 * packet.readUInt16BE(2))
+            if (data.subarray(12, 14).compare(HEADER_EXTENSION_BYTE) === 0) {
+              const headerExtensionLength = data.subarray(14).readUInt16BE()
+              packet = packet.subarray(4 * headerExtensionLength)
+            }
 
             if (packet.compare(OPUS_SILENCE_FRAME) === 0) {
               if (userData.stream._readableState.ended) return;
@@ -328,36 +342,33 @@ class Connection extends EventEmitter {
     this.player.sequence++
     if (this.player.sequence === MAX_SEQUENCE) this.player.sequence = 0
 
-    let packet = null
+    this.nonce++
+    if (this.nonce === MAX_NONCE) this.nonce = 0
+    this.nonceBuffer.writeUInt32LE(this.nonce, 0)
 
+    const noncePadding = this.nonceBuffer.subarray(0, 4)
+
+    let encryptedVoice = null
     switch (this.encryption) {
-      case 'xsalsa20_poly1305': {
-        const output = Sodium.close(chunk, nonce, this.udpInfo.secretKey)
+      case 'aead_aes256_gcm_rtpsize': {
+        const cipher = crypto.createCipheriv('aes-256-gcm', this.udpInfo.secretKey, this.nonceBuffer)
+				cipher.setAAD(this.packetBuffer)
 
-        packet = Buffer.concat([ this.packetBuffer, output ])
-
-        break
-      }
-      case 'xsalsa20_poly1305_suffix': {
-        const random = Sodium.random(24, this.nonceBuffer)
-        const output = Sodium.close(chunk, random, this.udpInfo.secretKey)
-
-        packet = Buffer.concat([ this.packetBuffer, output, random ])
+        encryptedVoice = Buffer.concat([ cipher.update(chunk), cipher.final(), cipher.getAuthTag() ])
 
         break
       }
-      case 'xsalsa20_poly1305_lite': {
-        this.nonce++
-        if (this.nonce === MAX_NONCE) this.nonce = 0
-        this.nonceBuffer.writeUInt32LE(this.nonce, 0)
-
-        const output = Sodium.close(chunk, this.nonceBuffer, this.udpInfo.secretKey)
-
-        packet = Buffer.concat([ this.packetBuffer, output, this.nonceBuffer.subarray(0, 4) ])
-
-        break
-      }
+      case 'aead_xchacha20_poly1305_rtpsize': {
+				encryptedVoice = Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+					chunk,
+					this.packetBuffer,
+					this.nonceBuffer,
+					this.udpInfo.secretKey,
+				)
+			}
     }
+
+    const packet = Buffer.concat([ this.packetBuffer, encryptedVoice, noncePadding ])
 
     this.udpSend(packet, (error) => {
       if (error) this.statistics.packetsLost++

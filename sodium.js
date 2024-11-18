@@ -1,45 +1,27 @@
-let libraries = {
+const libraries = {
   'sodium-native': (sodium) => ({
-    open: (buffer, nonce, key) => {
-      const output = Buffer.allocUnsafe(buffer.length - sodium.crypto_secretbox_MACBYTES)
-      sodium.crypto_secretbox_open_easy(output, buffer, nonce, key)
-  
-      return output
+    crypto_aead_xchacha20poly1305_ietf_encrypt: (voice, packetBuffer, nonce, key) => {
+      const buffer = Buffer.alloc(voice.length + sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES)
+      return sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(buffer, null, voice, packetBuffer, nonce, key)
     },
-    close: (buffer, nonce, key) => {
-      const output = Buffer.allocUnsafe(buffer.length + sodium.crypto_secretbox_MACBYTES)
-      sodium.crypto_secretbox_easy(output, buffer, nonce, key)
-  
-      return output
-    },
-    random: (number) => {
-      const output = Buffer.allocUnsafe(number)
-      sodium.randombytes_buf(output)
-  
-      return output 
+    crypto_aead_xchacha20poly1305_ietf_decrypt: (cipherVoice, packetBuffer, nonce, key) => {
+      const buffer = Buffer.alloc(cipherVoice.length - sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES)
+      return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(buffer, null, null, cipherVoice, packetBuffer, nonce, key)
     }
   }),
   'libsodium-wrappers': (sodium) => ({
-    open: sodium.crypto_secretbox_open_easy,
-    close: sodium.crypto_secretbox_easy,
-    random: sodium.randombytes_buf
-  }),
-  'tweetnacl': (sodium) => ({
-    open: sodium.secretbox.open,
-    close: sodium.secretbox,
-    random: sodium.randombytes_buf
+    crypto_aead_xchacha20poly1305_ietf_encrypt: (voice, packetBuffer, nonce, key) => {
+      return sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(voice, packetBuffer, null, nonce, key)
+    },
+    crypto_aead_xchacha20poly1305_ietf_decrypt: (cipherVoice, packetBuffer, nonce, key) => {
+      return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(null, cipherVoice, packetBuffer, nonce, key)
+    }
   })
 }
 
-libraries = {
-  ...libraries,
-  'sodium-javascript': libraries['sodium-native'],
-}
-
 const functions = {
-  open: null,
-  close: null,
-  random: null
+  crypto_aead_xchacha20poly1305_ietf_encrypt: null,
+  crypto_aead_xchacha20poly1305_ietf_decrypt: null,
 }
 
 void (async () => {
@@ -52,12 +34,11 @@ void (async () => {
 
       if (name == 'libsodium-wrappers') await lib.default.ready
 
-      functions.open = libraries[name](lib.default).open
-      functions.close = libraries[name](lib.default).close
-      functions.random = libraries[name](lib.default).random
+      functions.crypto_aead_xchacha20poly1305_ietf_encrypt = libraries[name](lib.default).crypto_aead_xchacha20poly1305_ietf_encrypt
+      functions.crypto_aead_xchacha20poly1305_ietf_decrypt = libraries[name](lib.default).crypto_aead_xchacha20poly1305_ietf_decrypt
     } catch {}
 
-    if (index == libraries.length - 1 && !functions.open) {
+    if (index == 2 && !functions.open) {
       throw new Error('Could not load any sodium library')
     }
 

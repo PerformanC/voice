@@ -17,9 +17,8 @@ A `Connection` class instance, with the following properties:
 - `guildId` - The ID of the guild that the voice channel is in.
 - `userId` - The ID of the user that is connecting to the voice channel.
 - `encryption` - The encryption mode of the UDP connection. Can be one of the following:
-  - `xsalsa20_poly1305` - Normal encryption.
-  - `xsalsa20_poly1305_suffix` - Normal encryption with a suffix.
-  - `xsalsa20_poly1305_lite` - Lite encryption. **Recommended for best performance.**
+  - `aead_aes256_gcm_rtpsize`
+  - `aead_xchacha20_poly1305_rtpsize`
 
 - `ws` - The WebSocket connection to the Discord voice server. `null` if not connected.
 
@@ -100,9 +99,11 @@ A `Connection` class instance, with the following properties:
 - Added `encryption` property and parameter
 - Added `statistics` property
 
-## 2.0.5
+## 2.1.0
 
 - Renamed `websocketClose` reason of `disconnected` state to `closed`
 - Added `closeReason` state property
+- Added new encryption modes
+- Removed deprecated encryption modes
 
 </details>
