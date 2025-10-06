@@ -69,6 +69,8 @@ class Connection extends EventEmitter {
 
     this.playTimeout = null
     this.audioStream = null
+
+    this.lastSequence = -1
   }
 
   udpSend(data, cb) {
@@ -134,7 +136,7 @@ class Connection extends EventEmitter {
 
     this._updateState({ status: 'connecting' })
 
-    this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=4`, {
+    this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=8`, {
       headers: {
         'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.1.0)'
       }
@@ -145,9 +147,10 @@ class Connection extends EventEmitter {
         this.ws.send(JSON.stringify({
           op: 7,
           d: {
-            server_id: this.voiceServer.guildId,
+            server_id: this.guildId,
             session_id: this.sessionId,
-            token: this.voiceServer.token
+            token: this.voiceServer.token,
+            seq_ack: this.lastSequence
           }
         }))
       } else {
@@ -165,6 +168,8 @@ class Connection extends EventEmitter {
 
     this.ws.on('message', async (data) => {
       const payload = JSON.parse(data)
+
+      if (payload.seq) this.lastSequence = payload.seq
 
       switch (payload.op) {
         case 2: {
@@ -288,7 +293,7 @@ class Connection extends EventEmitter {
           break
         }
         case 6: {
-          this.ping = Date.now() - payload.d
+          this.ping = Date.now() - payload.d.t
 
           break
         }
@@ -296,7 +301,10 @@ class Connection extends EventEmitter {
           this.hbInterval = setInterval(() => {
             this.ws.send(JSON.stringify({
               op: 3,
-              d: Date.now()
+              d: {
+                t: Date.now(),
+                seq_ack: this.lastSequence
+              }
             }))
           }, payload.d.heartbeat_interval)
 
