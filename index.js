@@ -185,7 +185,7 @@ class Connection extends EventEmitter {
 
             if (!userData || !this.udpInfo.secretKey) return;
 
-            data.copy(this.nonceBuffer, 0, data.length - UNPADDED_NONCE_LENGTH)
+            data.copy(this.nonceBuffer, 0, data.length - UNPADDED_NONCE_LENGTH, data.length)
 
             let headerSize = 12
             const first = data.readUint8()
@@ -207,6 +207,7 @@ class Connection extends EventEmitter {
                 decipheriv.setAuthTag(authTag)
         
                 packet = Buffer.concat([ decipheriv.update(encrypted), decipheriv.final() ])
+                break
               }
               case 'aead_xchacha20_poly1305_rtpsize': {
                 packet = Buffer.from(
