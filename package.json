@@ -21,10 +21,11 @@
   },
   "homepage": "https://github.com/PerformanC/voice#readme",
   "dependencies": {
-    "@performanc/pwsl": "github:PerformanC/Internals#PWSL"
+    "@performanc/pwsl": "github:PerformanC/Internals#PWSL",
+    "@snazzah/davey": "^0.1.7"
   },
   "optionalDependencies": {
-    "sodium-native": "^4.0.6",
-    "libsodium-wrappers": "^0.7.13"
+    "libsodium-wrappers": "^0.7.13",
+    "sodium-native": "^4.0.6"
   }
 }
