@@ -307,6 +307,8 @@ class Connection extends EventEmitter {
   }
 
   udpSend(data, cb) {
+    if (!this.udp) return;
+
     if (!cb) cb = (error) => {
       if (error) this.emit('error', error)
     }
@@ -758,6 +760,8 @@ class Connection extends EventEmitter {
   }
 
   sendAudioChunk(chunk) {
+    if (!this.udpInfo) return;
+
     if (this.mlsSession) {
       chunk = this.mlsSession.encrypt(chunk, OPUS_SILENCE_FRAME)
     }
