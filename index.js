@@ -823,28 +823,27 @@ class Connection extends EventEmitter {
       return;
     }
 
+    const oldAudioStream = this.audioStream;
+
     audioStream.once('readable', () => {
-      if (this.audioStream && this.playTimeout) {
+      if (oldAudioStream && this.playTimeout) {
+        clearTimeout(this.playTimeout);
+        this.playTimeout = null;
+
         this.statistics = {
           packetsSent: 0,
           packetsLost: 0,
           packetsExpected: 0
-        }
+        };
 
-        this.audioStream = audioStream
-
-        if (!this.audioStream.canStop) {
-          this.audioStream.removeListener('finishBuffering', this._markAsStoppable)
-          this.audioStream.once('finishBuffering', () => this._markAsStoppable())
-        }
-
-        return;
+        oldAudioStream.removeListener('finishBuffering', this._markAsStoppable);
       }
+      
+      this.audioStream = audioStream;
+      this.unpause('requested');
+    });
 
-      this.audioStream = audioStream
-
-      this.unpause('requested')
-    })
+    return oldAudioStream;
   }
 
   stop(reason) {
