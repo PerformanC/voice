@@ -317,6 +317,8 @@ class Connection extends EventEmitter {
   }
 
   _setSpeaking(value) {
+    if (!this.ws || !this.udpInfo) return
+
     this.ws.send(JSON.stringify({
       op: 5,
       d: {
