@@ -463,53 +463,87 @@ class Connection extends EventEmitter {
           this.udp = dgram.createSocket('udp4')
 
           this.udp.on('message', (data) => {
-            if (data.length <= 8) return;
+            if (data.length <= 12 || data.readUInt8(1) !== 0x78) return;
 
             const ssrc = data.readUInt32BE(8)
             const userData = ssrcs[ssrc]
 
             if (!userData || !this.udpInfo.secretKey) return;
 
-            data.copy(this.nonceBuffer, 0, data.length - UNPADDED_NONCE_LENGTH, data.length)
+            const rtpVersion = data[0] >> 6;
+            if (rtpVersion !== 2) return;
 
-            let headerSize = 12
-            const first = data.readUint8()
-            if ((first >> 4) & 0x01) headerSize += 4
+            const hasPadding = !!(data[0] & 0b100000);
+            const hasExtension = !!(data[0] & 0b10000);
+            const cc = data[0] & 0b1111;
 
-            const header = data.subarray(0, headerSize)
+            const nonce = this.encryption === 'aead_aes256_gcm_rtpsize' ? Buffer.alloc(12) : Buffer.alloc(24);
+            data.copy(nonce, 0, data.length - 4, data.length);
 
-            const encrypted = data.subarray(headerSize, data.length - AUTH_TAG_LENGTH - UNPADDED_NONCE_LENGTH)
-            const authTag = data.subarray(
-              data.length - AUTH_TAG_LENGTH - UNPADDED_NONCE_LENGTH,
-              data.length - UNPADDED_NONCE_LENGTH
-            )
-
-            let packet = null
-            switch (this.encryption) {
-              case 'aead_aes256_gcm_rtpsize': {
-                const decipheriv = crypto.createDecipheriv('aes-256-gcm', this.udpInfo.secretKey, this.nonceBuffer)
-                decipheriv.setAAD(header)
-                decipheriv.setAuthTag(authTag)
-        
-                packet = Buffer.concat([ decipheriv.update(encrypted), decipheriv.final() ])
-                break
-              }
-              case 'aead_xchacha20_poly1305_rtpsize': {
-                packet = Buffer.from(
-                  Sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
-                    Buffer.concat([ encrypted, authTag ]),
-                    header,
-                    this.nonceBuffer,
-                    this.udpInfo.secretKey
-                  )
-                )
-              }
+            let headerSize = 12 + (cc * 4);
+            
+            let extensionLengthInWords = 0;
+            if (hasExtension) {
+                if (data.readUInt16BE(headerSize) !== 0xBEDE) return;
+                extensionLengthInWords = data.readUInt16BE(headerSize + 2);
+                headerSize += 4;
             }
 
-            if (data.subarray(12, 14).compare(HEADER_EXTENSION_BYTE) === 0) {
-              const headerExtensionLength = data.subarray(14).readUInt16BE()
-              packet = packet.subarray(4 * headerExtensionLength)
+            const header = data.subarray(0, headerSize);
+            
+            let decryptedPacket;
+
+            if (this.encryption === 'aead_aes256_gcm_rtpsize') {
+                const trailerLength = 16 + 4;
+                if (data.length < headerSize + trailerLength) return;
+
+                const encrypted = data.subarray(headerSize, data.length - trailerLength);
+                const authTag = data.subarray(data.length - trailerLength, data.length - 4);
+
+                try {
+                    const decipher = crypto.createDecipheriv('aes-256-gcm', this.udpInfo.secretKey, nonce);
+                    decipher.setAAD(header);
+                    decipher.setAuthTag(authTag);
+                    decryptedPacket = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+                } catch (e) {
+                    this.emit('error', new Error(`Failed to decrypt AES-256-GCM packet: ${e.message}`));
+                    return;
+                }
+            } else if (this.encryption === 'aead_xchacha20_poly1305_rtpsize') {
+                if (data.length < headerSize + 4) return;
+
+                const encrypted = data.subarray(headerSize, data.length - 4);
+
+                try {
+                    decryptedPacket = Buffer.from(
+                        Sodium.crypto_aead_xchacha20_poly1305_ietf_decrypt(
+                            encrypted,
+                            header,
+                            nonce,
+                            this.udpInfo.secretKey
+                        )
+                    );
+                } catch (e) {
+                    this.emit('error', new Error(`Failed to decrypt XChaCha20-Poly1305 packet: ${e.message}`));
+                    return;
+                }
+            } else {
+                return;
             }
+
+            if (hasPadding) {
+                const paddingAmount = decryptedPacket.readUInt8(decryptedPacket.length - 1);
+                if (paddingAmount < decryptedPacket.length) {
+                    decryptedPacket = decryptedPacket.subarray(0, decryptedPacket.length - paddingAmount);
+                }
+            }
+
+            const extensionDataLength = extensionLengthInWords * 4;
+            if (hasExtension && extensionDataLength > 0) {
+                decryptedPacket = decryptedPacket.subarray(extensionDataLength);
+            }
+            
+            let packet = decryptedPacket;
 
             if (this.mlsSession && userData.userId) {
               const decrypted = this.mlsSession.decrypt(packet, userData.userId, OPUS_SILENCE_FRAME)
