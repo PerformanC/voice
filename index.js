@@ -298,6 +298,7 @@ class Connection extends EventEmitter {
     this.packetBuffer = Buffer.allocUnsafe(12)
 
     this.playTimeout = null
+    this.challengeTimeout = null
     this.audioStream = null
 
     this.lastSequence = -1
@@ -866,6 +867,11 @@ class Connection extends EventEmitter {
         clearTimeout(this.playTimeout);
         this.playTimeout = null;
 
+        if (this.challengeTimeout) {
+          clearTimeout(this.challengeTimeout)
+          this.challengeTimeout = null
+        }
+
         this.statistics = {
           packetsSent: 0,
           packetsLost: 0,
@@ -885,6 +891,11 @@ class Connection extends EventEmitter {
   stop(reason) {
     clearTimeout(this.playTimeout)
     this.playTimeout = null
+
+    if (this.challengeTimeout) {
+      clearTimeout(this.challengeTimeout)
+      this.challengeTimeout = null
+    }
 
     if(this.audioStream) {
       this.audioStream.destroy()
@@ -910,6 +921,10 @@ class Connection extends EventEmitter {
 
     this._setSpeaking(0)
     clearTimeout(this.playTimeout)
+    if (this.challengeTimeout) {
+      clearTimeout(this.challengeTimeout)
+      this.challengeTimeout = null
+    }
   }
 
   _markAsStoppable() {
@@ -921,13 +936,33 @@ class Connection extends EventEmitter {
       if(!this.audioStream) return;
       const chunk = this.audioStream.read(OPUS_FRAME_SIZE)
 
-      if (!chunk && this.audioStream.canStop) return this.stop('finished')
+      if (!chunk && this.audioStream.canStop) {
+        if (this.challengeTimeout) {
+          clearTimeout(this.challengeTimeout)
+          this.challengeTimeout = null
+        }
+        return this.stop('finished')
+      }
 
-      if (chunk) this.sendAudioChunk(chunk)
+      if (chunk) {
+        if (this.challengeTimeout) {
+          clearTimeout(this.challengeTimeout)
+          this.challengeTimeout = null
+        }
+        this.sendAudioChunk(chunk)
+      } else {
+        if (!this.challengeTimeout) {
+          this.challengeTimeout = setTimeout(() => {
+            this.emit('stuck')
+            this.challengeTimeout = null
+            this.pause('stuck')
+          }, 2000)
+        }
+      }
     
       this.player.nextPacket += OPUS_FRAME_DURATION
       this._packetInterval()
-    }, this.player.nextPacket - Date.now())
+    }, Math.max(0, this.player.nextPacket - Date.now()))
   }
 
   unpause(reason) {
@@ -950,6 +985,11 @@ class Connection extends EventEmitter {
     if (this.playTimeout) {
       clearTimeout(this.playTimeout)
       this.playTimeout = null
+    }
+
+    if (this.challengeTimeout) {
+      clearTimeout(this.challengeTimeout)
+      this.challengeTimeout = null
     }
 
     this.player = {
