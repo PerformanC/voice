@@ -540,6 +540,12 @@ class Connection extends EventEmitter {
           this.emit('speakStart', payload.d.user_id, ssrc)
           break
 
+        case 6: {
+          this.ping = Date.now() - payload.d.t
+
+          break
+        }
+
         case 8:
           this.hbInterval = setInterval(() => {
             this.ws.send(
