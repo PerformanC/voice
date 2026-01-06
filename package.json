@@ -1,6 +1,6 @@
 {
   "name": "@performanc/voice",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "Performant Discord voice API client for ES6 Node.js",
   "main": "index.js",
   "type": "module",
@@ -22,10 +22,10 @@
   "homepage": "https://github.com/PerformanC/voice#readme",
   "dependencies": {
     "@performanc/pwsl": "github:PerformanC/Internals#PWSL",
-    "@snazzah/davey": "^0.1.7"
+    "@snazzah/davey": "^0.1.9"
   },
   "optionalDependencies": {
-    "libsodium-wrappers": "^0.7.13",
-    "sodium-native": "^4.0.6"
+    "libsodium-wrappers": "^0.7.16",
+    "sodium-native": "^5.0.10"
   }
 }
