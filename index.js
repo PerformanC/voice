@@ -244,6 +244,7 @@ class VoiceMLS extends EventEmitter {
 
     this.reinitializing = true
     this.consecutiveFailures = 0
+    this.consecutiveEncryptionFailures = 0
 
     const currentProtocolVersion = this.protocolVersion
     this.protocolVersion = 0
