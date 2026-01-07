@@ -373,7 +373,7 @@ class Connection extends EventEmitter {
 
     this.guildId = obj.guildId
     this.userId = obj.userId
-    this.channelId = obj.channelId ?? null
+    this.channelId = obj.channelId ?? obj.channel_id ?? null
     this.encryption = obj.encryption
 
     this.ws = null
@@ -656,7 +656,7 @@ class Connection extends EventEmitter {
           user_id: this.userId,
           session_id: this.sessionId,
           token: this.voiceServer.token,
-          max_dave_protocol_version: this.mlsProtocolVersion
+          max_dave_protocol_version: this.channelId ? this.mlsProtocolVersion : 0
         })
       }
     })
