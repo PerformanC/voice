@@ -244,8 +244,17 @@ class VoiceMLS extends EventEmitter {
     this.reinitializing = true
     this.consecutiveFailures = 0
 
-    this.emit('invalidateTransition', transitionId)
-    this.reinit({ emitKeyPackage: true })
+    const currentProtocolVersion = this.protocolVersion
+    this.protocolVersion = 0
+    this.reinit({ emitKeyPackage: false })
+
+    setTimeout(() => {
+      if (this.protocolVersion === 0)
+        this.protocolVersion = currentProtocolVersion
+
+      this.emit('invalidateTransition', transitionId)
+      this.reinit({ emitKeyPackage: true })
+    }, 200)
   }
 
   processProposals(payload, connectedClients) {
