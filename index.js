@@ -103,6 +103,7 @@ class VoiceMLS extends EventEmitter {
     this.downgraded = false
 
     this.consecutiveFailures = 0
+    this.consecutiveEncryptionFailures = 0
     this.reinitializing = false
     this.failureTolerance =
       options.decryptionFailureTolerance ?? DEFAULT_DECRYPTION_FAILURE_TOLERANCE
@@ -329,8 +330,19 @@ class VoiceMLS extends EventEmitter {
 
     try {
       const encrypted = this.session.encryptOpus(packet)
+      this.consecutiveEncryptionFailures = 0
       return encrypted
     } catch (error) {
+      if (!this.reinitializing && !this.pendingTransition) {
+        this.consecutiveEncryptionFailures++
+
+        if (this.consecutiveEncryptionFailures > this.failureTolerance) {
+          if (this.lastTransitionId !== undefined) {
+            this.recoverFromInvalidTransition(this.lastTransitionId)
+          }
+        }
+      }
+
       return packet
     }
   }
