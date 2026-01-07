@@ -254,7 +254,7 @@ class VoiceMLS extends EventEmitter {
 
       this.emit('invalidateTransition', transitionId)
       this.reinit({ emitKeyPackage: true })
-    }, 200)
+    }, 20)
   }
 
   processProposals(payload, connectedClients) {
