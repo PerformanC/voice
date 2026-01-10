@@ -513,6 +513,7 @@ class Connection extends EventEmitter {
     if (!MLS) return
 
     if (!this.channelId) {
+      // Silently skip DAVE support when channelId is not set
       return
     }
 
@@ -1102,25 +1103,8 @@ class Connection extends EventEmitter {
       }
 
       case 11: {
-        const d = payload.d ?? {}
-
-        if (Array.isArray(d.user_ids)) {
-          for (const id of d.user_ids) this.connectedUserIds.add(String(id))
-        }
-
-        if (d.user_id !== undefined && d.user_id !== null) {
-          this.connectedUserIds.add(String(d.user_id))
-        }
-
-        if (Array.isArray(d.users)) {
-          for (const u of d.users) {
-            if (u?.user_id !== undefined && u.user_id !== null) {
-              this.connectedUserIds.add(String(u.user_id))
-            }
-          }
-        }
-
-        break
+        const ids = payload.d?.user_ids ?? []
+        for (const id of ids) this.connectedUserIds.add(String(id))
       }
 
       case 13: {
