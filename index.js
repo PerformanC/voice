@@ -99,7 +99,9 @@ class VoiceMLS extends EventEmitter {
     this.channelId = channelId
 
     this.lastTransitionId = undefined
-    this.pendingTransition = undefined
+    this.plaintextGraceUntil = 0
+    this.pendingTransitions = new Map()
+
     this.downgraded = false
 
     this.consecutiveFailures = 0
@@ -118,8 +120,22 @@ class VoiceMLS extends EventEmitter {
     this.reinit({ emitKeyPackage: false })
   }
 
+  get transitioning() {
+    return this.pendingTransitions.size > 0
+  }
+
+  _hasPendingDowngrade() {
+    for (const v of this.pendingTransitions.values()) {
+      if (v === 0) return true
+    }
+    return false
+  }
+
   reinit({ emitKeyPackage } = { emitKeyPackage: true }) {
+    this.pendingTransitions.clear()
     this.externalSenderSet = false
+    this.consecutiveFailures = 0
+    this.consecutiveEncryptionFailures = 0
 
     if (this.protocolVersion > 0) {
       if (this.session) {
@@ -136,18 +152,15 @@ class VoiceMLS extends EventEmitter {
         try {
           this.session.setExternalSender(this.externalSender)
           this.externalSenderSet = true
-        } catch (e) {
-          // Failed to re-apply external sender
+        } catch {
+          // ignore
         }
       }
 
       const keyPackage = this.session.getSerializedKeyPackage()
       this._pendingKeyPackage = keyPackage
 
-      if (emitKeyPackage) {
-        this.emit('keyPackage', keyPackage)
-      }
-
+      if (emitKeyPackage) this.emit('keyPackage', keyPackage)
       return
     }
 
@@ -157,9 +170,7 @@ class VoiceMLS extends EventEmitter {
       } catch {}
       try {
         this.session.setPassthroughMode(true, TRANSITION_EXPIRY)
-      } catch (e) {
-        // Failed to enable passthrough mode
-      }
+      } catch {}
     }
   }
 
@@ -174,67 +185,73 @@ class VoiceMLS extends EventEmitter {
 
     this.externalSender = Buffer.from(externalSender)
 
-    try {
-      this.session.setExternalSender(externalSender)
-      this.externalSenderSet = true
-    } catch (error) {
-      throw error
-    }
+    this.session.setExternalSender(externalSender)
+    this.externalSenderSet = true
   }
 
   prepareTransition(data) {
-    this.pendingTransition = data
+    this.pendingTransitions.set(data.transition_id, data.protocol_version)
 
     if (data.transition_id === 0) {
-      this.executeTransition(data.transition_id)
+      this.executeTransition(0)
       return false
     }
 
     if (data.protocol_version === 0) {
+      this.plaintextGraceUntil = Date.now() + 120_000
       try {
-        this.session?.setPassthroughMode(
-          true,
-          TRANSITION_EXPIRY_PENDING_DOWNGRADE
-        )
-      } catch (e) {
-        // Failed to set passthrough
-      }
+        this.session?.setPassthroughMode(true, 120)
+      } catch {}
     }
 
     return true
   }
 
   executeTransition(transitionId) {
-    if (!this.pendingTransition) return false
+    const nextVersion = this.pendingTransitions.get(transitionId)
+    if (nextVersion === undefined) return false
 
-    let transitioned = false
-    if (transitionId === this.pendingTransition.transition_id) {
-      const oldVersion = this.protocolVersion
-      this.protocolVersion = this.pendingTransition.protocol_version
+    const oldVersion = this.protocolVersion
+    this.protocolVersion = nextVersion
 
-      if (oldVersion !== this.protocolVersion && this.protocolVersion === 0) {
-        this.downgraded = true
-      } else if (transitionId > 0 && this.downgraded) {
-        this.downgraded = false
-        try {
-          this.session?.setPassthroughMode(true, TRANSITION_EXPIRY)
-        } catch (e) {
-          // Failed to set passthrough
-        }
-      }
-
-      transitioned = true
-      this.reinitializing = false
-      this.lastTransitionId = transitionId
+    if (this.protocolVersion === 0) {
+      this.plaintextGraceUntil = Date.now() + 120_000
+    } else {
+      this.plaintextGraceUntil = Date.now() + TRANSITION_EXPIRY * 1000
     }
 
-    this.pendingTransition = undefined
-    return transitioned
+    if (oldVersion !== this.protocolVersion && this.protocolVersion === 0) {
+      this.downgraded = true
+    } else if (oldVersion === 0 && this.protocolVersion > 0) {
+      this.downgraded = false
+      try {
+        this.session?.setPassthroughMode(true, TRANSITION_EXPIRY)
+      } catch {}
+    } else if (
+      transitionId > 0 &&
+      this.downgraded &&
+      this.protocolVersion > 0
+    ) {
+      this.downgraded = false
+      try {
+        this.session?.setPassthroughMode(true, TRANSITION_EXPIRY)
+      } catch {}
+    }
+
+    this.pendingTransitions.delete(transitionId)
+
+    this.reinitializing = false
+    this.consecutiveFailures = 0
+    this.consecutiveEncryptionFailures = 0
+    this.lastTransitionId = transitionId
+
+    return true
   }
 
   prepareEpoch(data) {
     if (data.epoch === 1) {
       this.protocolVersion = data.protocol_version
+      this.downgraded = false
       this.reinit({ emitKeyPackage: true })
     }
   }
@@ -245,15 +262,16 @@ class VoiceMLS extends EventEmitter {
     this.reinitializing = true
     this.consecutiveFailures = 0
     this.consecutiveEncryptionFailures = 0
+    this.pendingTransitions.clear()
 
     const currentProtocolVersion = this.protocolVersion
+
     this.protocolVersion = 0
     this.reinit({ emitKeyPackage: false })
 
     setTimeout(() => {
       if (this.protocolVersion === 0)
         this.protocolVersion = currentProtocolVersion
-
       this.emit('invalidateTransition', transitionId)
       this.reinit({ emitKeyPackage: true })
     }, 20)
@@ -271,7 +289,6 @@ class VoiceMLS extends EventEmitter {
     )
 
     if (!commit) return null
-
     return welcome ? Buffer.concat([commit, welcome]) : commit
   }
 
@@ -283,18 +300,17 @@ class VoiceMLS extends EventEmitter {
     try {
       this.session.processCommit(serverPayload.subarray(2))
 
+      if (transitionId !== 0 && !this.pendingTransitions.has(transitionId)) {
+        this.pendingTransitions.set(transitionId, this.protocolVersion)
+      }
+
       if (transitionId === 0) {
         this.reinitializing = false
-        this.lastTransitionId = transitionId
-      } else {
-        this.pendingTransition = {
-          transition_id: transitionId,
-          protocol_version: this.protocolVersion
-        }
+        this.lastTransitionId = 0
       }
 
       return { transitionId, success: true }
-    } catch (error) {
+    } catch {
       this.recoverFromInvalidTransition(transitionId)
       return { transitionId, success: false }
     }
@@ -308,18 +324,17 @@ class VoiceMLS extends EventEmitter {
     try {
       this.session.processWelcome(serverPayload.subarray(2))
 
+      if (transitionId !== 0 && !this.pendingTransitions.has(transitionId)) {
+        this.pendingTransitions.set(transitionId, this.protocolVersion)
+      }
+
       if (transitionId === 0) {
         this.reinitializing = false
-        this.lastTransitionId = transitionId
-      } else {
-        this.pendingTransition = {
-          transition_id: transitionId,
-          protocol_version: this.protocolVersion
-        }
+        this.lastTransitionId = 0
       }
 
       return { transitionId, success: true }
-    } catch (error) {
+    } catch {
       this.recoverFromInvalidTransition(transitionId)
       return { transitionId, success: false }
     }
@@ -327,35 +342,35 @@ class VoiceMLS extends EventEmitter {
 
   encrypt(packet) {
     if (packet.equals(OPUS_SILENCE_FRAME)) return packet
+
+    const downgradePending = this._hasPendingDowngrade()
+    if (downgradePending) return packet
+
     if (this.protocolVersion === 0 || !this.session?.ready) return packet
 
     try {
       const encrypted = this.session.encryptOpus(packet)
       this.consecutiveEncryptionFailures = 0
       return encrypted
-    } catch (error) {
-      if (!this.reinitializing && !this.pendingTransition) {
+    } catch {
+      if (!this.reinitializing && !this.transitioning) {
         this.consecutiveEncryptionFailures++
-
         if (this.consecutiveEncryptionFailures > this.failureTolerance) {
-          if (this.lastTransitionId !== undefined) {
-            this.recoverFromInvalidTransition(this.lastTransitionId)
-          }
+          this.recoverFromInvalidTransition(this.lastTransitionId ?? 0)
         }
       }
-
       return packet
     }
   }
 
   decrypt(packet, userId) {
     if (packet.equals(OPUS_SILENCE_FRAME)) return packet
+    if (!this.session?.ready) return packet
 
-    const canDecrypt =
-      this.session?.ready &&
-      (this.protocolVersion !== 0 || this.session?.canPassthrough(userId))
+    const canTry =
+      this.protocolVersion !== 0 || this.session.canPassthrough(userId)
 
-    if (!canDecrypt || !this.session) return packet
+    if (!canTry) return packet
 
     try {
       const buffer = this.session.decrypt(
@@ -365,24 +380,31 @@ class VoiceMLS extends EventEmitter {
       )
       this.consecutiveFailures = 0
       return buffer
-    } catch (error) {
-      if (!this.reinitializing && !this.pendingTransition) {
-        this.consecutiveFailures++
+    } catch {
+      const now = Date.now()
 
+      if (
+        now < this.plaintextGraceUntil &&
+        (this.protocolVersion === 0 ||
+          this._hasPendingDowngrade() ||
+          this.transitioning)
+      ) {
+        return packet
+      }
+
+      if (!this.reinitializing && !this.transitioning) {
+        this.consecutiveFailures++
         if (this.consecutiveFailures > this.failureTolerance) {
-          if (this.lastTransitionId !== undefined) {
-            this.recoverFromInvalidTransition(this.lastTransitionId)
-          } else {
-            throw error
-          }
+          this.recoverFromInvalidTransition(this.lastTransitionId ?? 0)
         }
       }
-    }
 
-    return null
+      return null
+    }
   }
 
   destroy() {
+    this.pendingTransitions.clear()
     try {
       this.session?.reset()
     } catch {}
@@ -491,7 +513,6 @@ class Connection extends EventEmitter {
     if (!MLS) return
 
     if (!this.channelId) {
-      // Silently skip DAVE support when channelId is not set
       return
     }
 
@@ -588,7 +609,17 @@ class Connection extends EventEmitter {
           this._wsSendBinary(DAVE_OPCODES.COMMIT_WELCOME, response)
         }
       } catch (e) {
-        // Ignoring proposals
+        this.emit(
+          'error',
+          new Error(`[DAVE] processProposals failed: ${e.message}`)
+        )
+
+        this.pendingProposals.length = 0
+
+        try {
+          const tid = this.mlsSession?.lastTransitionId ?? 0
+          this.mlsSession?.recoverFromInvalidTransition(tid)
+        } catch {}
       }
     }
   }
@@ -678,7 +709,9 @@ class Connection extends EventEmitter {
           user_id: this.userId,
           session_id: this.sessionId,
           token: this.voiceServer.token,
-          max_dave_protocol_version: this.channelId ? this.mlsProtocolVersion : 0
+          max_dave_protocol_version: this.channelId
+            ? this.mlsProtocolVersion
+            : 0
         })
       }
     })
@@ -764,7 +797,7 @@ class Connection extends EventEmitter {
 
           try {
             const result = this.mlsSession.processCommit(payload)
-            if (result.success) {
+            if (result.success && result.transitionId !== 0) {
               this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
                 transition_id: result.transitionId
               })
@@ -786,7 +819,7 @@ class Connection extends EventEmitter {
 
           try {
             const result = this.mlsSession.processWelcome(payload)
-            if (result.success) {
+            if (result.success && result.transitionId !== 0) {
               this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
                 transition_id: result.transitionId
               })
@@ -833,6 +866,19 @@ class Connection extends EventEmitter {
     })
 
     this.ws.on('error', (error) => this.emit('error', error))
+  }
+
+  _cleanupSSRCsForUserId(userId) {
+    const uid = String(userId)
+    for (const [ssrcStr, entry] of Object.entries(ssrcs)) {
+      if (entry?.userId === uid) {
+        try {
+          if (entry.stream && !entry.stream.readableEnded)
+            entry.stream.push(null)
+        } catch {}
+        delete ssrcs[ssrcStr]
+      }
+    }
   }
 
   async _handleJSON(payload, cb) {
@@ -1056,14 +1102,34 @@ class Connection extends EventEmitter {
       }
 
       case 11: {
-        const ids = payload.d?.user_ids ?? []
-        for (const id of ids) this.connectedUserIds.add(String(id))
+        const d = payload.d ?? {}
+
+        if (Array.isArray(d.user_ids)) {
+          for (const id of d.user_ids) this.connectedUserIds.add(String(id))
+        }
+
+        if (d.user_id !== undefined && d.user_id !== null) {
+          this.connectedUserIds.add(String(d.user_id))
+        }
+
+        if (Array.isArray(d.users)) {
+          for (const u of d.users) {
+            if (u?.user_id !== undefined && u.user_id !== null) {
+              this.connectedUserIds.add(String(u.user_id))
+            }
+          }
+        }
+
         break
       }
 
       case 13: {
         const id = payload.d?.user_id
-        if (id) this.connectedUserIds.delete(String(id))
+        if (id) {
+          const uid = String(id)
+          this.connectedUserIds.delete(uid)
+          this._cleanupSSRCsForUserId(uid)
+        }
         break
       }
 
