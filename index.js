@@ -1105,6 +1105,7 @@ class Connection extends EventEmitter {
       case 11: {
         const ids = payload.d?.user_ids ?? []
         for (const id of ids) this.connectedUserIds.add(String(id))
+        break
       }
 
       case 13: {
