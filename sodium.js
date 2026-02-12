@@ -6,20 +6,23 @@ function u8ToBuf(u8) {
 
 let api = null
 
-// i did some benchmarks myself, and, sodium-native uses C++ bindings and is faster than libsodium-wrappers (WASM/JS)
-// It also allows writing directly into pre-allocated buffers.
-// https://sodium-friends.github.io/docs/docs/aead
-// https://sodium-friends.github.io/docs/docs/aead#crypto_aead_xchacha20poly1305_ietf_decrypt
-/* const ok = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
-    out,      // m: output buffer ('out')
-    null,     // nsec: must be null
-    cipher,   // c: ciphertext to decrypt
-    aad,      // ad: additional data (optional, can be null)
-    nonce,    // npub: nonce
-    key       // k: key
-) */
-// now for the _into usage, this allows writing directly into pre-allocated buffers
+/* INFO: using sodium-native first because its more performant than libsodium-wrappers, but if it fails to load
+  (e.g. not supported platform), it will fallback to libsodium-wrappers. Sodium-native is preffered because it
+  allows writing directly into libsodium buffers.
 
+  USAGE: const ok = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
+      out,      // m: output buffer ('out')
+      null,     // nsec: must be null
+      cipher,   // c: ciphertext to decrypt
+      aad,      // ad: additional data (optional, can be null)
+      nonce,    // npub: nonce
+      key       // k: key
+  )
+
+  SOURCES:
+        - https://sodium-friends.github.io/docs/docs/aead
+        - https://sodium-friends.github.io/docs/docs/aead#crypto_aead_xchacha20poly1305_ietf_decrypt
+*/
 try {
   const mod = await import('sodium-native')
   const sodium = mod.default ?? mod
