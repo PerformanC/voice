@@ -447,6 +447,8 @@ class Connection extends EventEmitter {
       this.encryption === 'aead_aes256_gcm_rtpsize'
         ? Buffer.alloc(12)
         : Buffer.alloc(24)
+    this._recvNonce24 = Buffer.alloc(24)
+    this._recvNonce12 = this._recvNonce24.subarray(0, 12)
     this.packetBuffer = Buffer.allocUnsafe(12)
 
     this.playTimeout = null
@@ -645,7 +647,7 @@ class Connection extends EventEmitter {
         const data = message.readUInt16BE(0)
         if (data !== 2) return
 
-        const packet = Buffer.from(message)
+        const packet = message
         resolve({
           ip: packet.subarray(8, packet.indexOf(0, 8)).toString('utf8'),
           port: packet.readUInt16BE(packet.length - 2)
@@ -909,8 +911,9 @@ class Connection extends EventEmitter {
           const cc = data[0] & 0b1111
           const nonce =
             this.encryption === 'aead_aes256_gcm_rtpsize'
-              ? Buffer.alloc(12)
-              : Buffer.alloc(24)
+              ? this._recvNonce12
+              : this._recvNonce24
+          nonce.fill(0)
           data.copy(nonce, 0, data.length - 4, data.length)
 
           let headerSize = 12 + cc * 4
@@ -947,10 +950,11 @@ class Connection extends EventEmitter {
               )
               decipher.setAAD(header)
               decipher.setAuthTag(authTag)
-              decryptedPacket = Buffer.concat([
-                decipher.update(encrypted),
-                decipher.final()
-              ])
+              const u = decipher.update(encrypted)
+              const f = decipher.final()
+              decryptedPacket = Buffer.allocUnsafe(u.length + f.length)
+              u.copy(decryptedPacket, 0)
+              f.copy(decryptedPacket, u.length)
             } catch (e) {
               this.emit(
                 'error',
@@ -963,14 +967,13 @@ class Connection extends EventEmitter {
 
             const encrypted = data.subarray(headerSize, data.length - 4)
             try {
-              decryptedPacket = Buffer.from(
-                Sodium.crypto_aead_xchacha20_poly1305_ietf_decrypt(
+              decryptedPacket =
+                Sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
                   encrypted,
                   header,
                   nonce,
                   this.udpInfo.secretKey
                 )
-              )
             } catch (e) {
               this.emit(
                 'error',
@@ -1202,11 +1205,7 @@ class Connection extends EventEmitter {
     this.nonce++
     if (this.nonce === MAX_NONCE) this.nonce = 0
 
-    this.nonceBuffer.fill(0)
     this.nonceBuffer.writeUInt32BE(this.nonce, 0)
-    const noncePadding = this.nonceBuffer.subarray(0, 4)
-
-    let encryptedVoice = null
 
     switch (this.encryption) {
       case 'aead_aes256_gcm_rtpsize': {
@@ -1216,42 +1215,71 @@ class Connection extends EventEmitter {
           this.nonceBuffer
         )
         cipher.setAAD(this.packetBuffer)
-        encryptedVoice = Buffer.concat([
-          cipher.update(chunk),
-          cipher.final(),
-          cipher.getAuthTag()
-        ])
-        break
+        const ciphertext = cipher.update(chunk)
+        const final = cipher.final()
+        const authTag = cipher.getAuthTag()
+        const packet = Buffer.allocUnsafe(
+          12 + ciphertext.length + final.length + authTag.length + 4
+        )
+        this.packetBuffer.copy(packet, 0)
+        let off = 12
+        ciphertext.copy(packet, off)
+        off += ciphertext.length
+        final.copy(packet, off)
+        off += final.length
+        authTag.copy(packet, off)
+        off += authTag.length
+        packet.writeUInt32BE(this.nonce, off)
+
+        this.player.lastPacketTime = Date.now()
+        this.udpSend(packet, (error) => {
+          if (error) this.statistics.packetsLost++
+          else this.statistics.packetsSent++
+          this.statistics.packetsExpected++
+        })
+        return
       }
 
       case 'aead_xchacha20_poly1305_rtpsize': {
-        encryptedVoice = Buffer.from(
-          Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+        const abytes = Sodium.ABYTES ?? 16
+        const cipherLen = chunk.length + abytes
+        const packet = Buffer.allocUnsafe(12 + cipherLen + 4)
+        this.packetBuffer.copy(packet, 0)
+
+        const out = packet.subarray(12, 12 + cipherLen)
+
+        if (Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt_into) {
+          Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt_into(
+            out,
             chunk,
             this.packetBuffer,
             this.nonceBuffer,
             this.udpInfo.secretKey
           )
-        )
-        break
+        } else {
+          const encrypted = Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
+            chunk,
+            this.packetBuffer,
+            this.nonceBuffer,
+            this.udpInfo.secretKey
+          )
+          encrypted.copy(out)
+        }
+
+        packet.writeUInt32BE(this.nonce, 12 + cipherLen)
+
+        this.player.lastPacketTime = Date.now()
+        this.udpSend(packet, (error) => {
+          if (error) this.statistics.packetsLost++
+          else this.statistics.packetsSent++
+          this.statistics.packetsExpected++
+        })
+        return
       }
 
       default:
         return
     }
-
-    const packet = Buffer.concat([
-      this.packetBuffer,
-      encryptedVoice,
-      noncePadding
-    ])
-    this.player.lastPacketTime = Date.now()
-
-    this.udpSend(packet, (error) => {
-      if (error) this.statistics.packetsLost++
-      else this.statistics.packetsSent++
-      this.statistics.packetsExpected++
-    })
   }
 
   play(audioStream) {
