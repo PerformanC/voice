@@ -25,7 +25,7 @@
     "@snazzah/davey": "^0.1.9"
   },
   "optionalDependencies": {
-    "libsodium-wrappers": "^0.7.16",
+    "libsodium-wrappers": "^0.8.2",
     "sodium-native": "^5.0.10"
   }
 }
