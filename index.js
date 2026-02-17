@@ -18,6 +18,7 @@ const MLS_PROTOCOL_VERSION = MLS?.DAVE_PROTOCOL_VERSION ?? 0
 const OPUS_SAMPLE_RATE = 48000
 const OPUS_FRAME_DURATION = 20
 const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe])
+const OPUS_SILENCE_FRAME_LENGTH = 3
 
 const TIMESTAMP_INCREMENT = (OPUS_SAMPLE_RATE / 1000) * OPUS_FRAME_DURATION
 const OPUS_FRAME_SIZE = (OPUS_SAMPLE_RATE * OPUS_FRAME_DURATION) / 1000
@@ -364,7 +365,7 @@ class VoiceMLS extends EventEmitter {
   }
 
   decrypt(packet, userId) {
-    if (packet.equals(OPUS_SILENCE_FRAME)) return packet
+    if (packet.length === OPUS_SILENCE_FRAME_LENGTH && packet[0] === 0xf8 && packet[1] === 0xff && packet[2] === 0xfe) return packet
     if (!this.session?.ready) return packet
 
     const canTry =
