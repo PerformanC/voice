@@ -342,7 +342,13 @@ class VoiceMLS extends EventEmitter {
   }
 
   encrypt(packet) {
-    if (packet.equals(OPUS_SILENCE_FRAME)) return packet
+    if (
+      packet.length === OPUS_SILENCE_FRAME_LENGTH &&
+      packet[0] === 0xf8 &&
+      packet[1] === 0xff &&
+      packet[2] === 0xfe
+    )
+      return packet
 
     const downgradePending = this._hasPendingDowngrade()
     if (downgradePending) return packet
@@ -430,6 +436,15 @@ class Connection extends EventEmitter {
     this.voiceServer = null
 
     this.hbInterval = null
+    this.hbAckTimeout = null
+    this.heartbeatIntervalMs = 0
+    this.lastHeartbeatSentAt = 0
+    this.lastHeartbeatAckAt = 0
+    this.udpKeepAliveInterval = null
+    this.udpKeepAliveIntervalMs = 0
+    this.udpKeepAliveCounter = 0
+    this.lastUdpKeepAliveSentAt = 0
+    this.lastUdpKeepAliveAckAt = 0
     this.udpInfo = null
     this.udp = null
 
@@ -510,6 +525,131 @@ class Connection extends EventEmitter {
     this.lastSequence = sequenceNumber
 
     return { sequenceNumber, opcode, payload }
+  }
+
+  _clearHeartbeatAckTimeout() {
+    if (this.hbAckTimeout) {
+      clearTimeout(this.hbAckTimeout)
+      this.hbAckTimeout = null
+    }
+  }
+
+  _armHeartbeatAckTimeout() {
+    this._clearHeartbeatAckTimeout()
+
+    if (!this.ws || !this.heartbeatIntervalMs) return
+
+    const timeoutMs = Math.max(15000, this.heartbeatIntervalMs * 3)
+    this.hbAckTimeout = setTimeout(() => {
+      if (!this.ws) return
+
+      const now = Date.now()
+      const lastSentAt = this.lastHeartbeatSentAt || 0
+      const lastAckAt = this.lastHeartbeatAckAt || 0
+      if (!lastSentAt) return this._armHeartbeatAckTimeout()
+
+      const sentAge = now - lastSentAt
+      const ackIsFresh = lastAckAt >= lastSentAt
+      if (ackIsFresh && sentAge < timeoutMs) return this._armHeartbeatAckTimeout()
+
+      this.emit(
+        'error',
+        new Error(
+          `Voice heartbeat ACK timeout (${timeoutMs}ms) for guild ${this.guildId}`
+        )
+      )
+      this._reconnectTransport('heartbeat_timeout', 4000, 'Heartbeat ACK timeout')
+    }, timeoutMs)
+    this.hbAckTimeout.unref?.()
+  }
+
+  _sendHeartbeat() {
+    if (!this.ws) return
+    const sentAt = Date.now()
+    this.lastHeartbeatSentAt = sentAt
+    this._wsSendJSON(3, { t: sentAt, seq_ack: this.lastSequence })
+    this._armHeartbeatAckTimeout()
+  }
+
+  _clearUdpKeepAlive() {
+    if (this.udpKeepAliveInterval) {
+      clearInterval(this.udpKeepAliveInterval)
+      this.udpKeepAliveInterval = null
+    }
+    this.udpKeepAliveIntervalMs = 0
+    this.udpKeepAliveCounter = 0
+    this.lastUdpKeepAliveSentAt = 0
+    this.lastUdpKeepAliveAckAt = 0
+  }
+
+  _sendUdpKeepAlive() {
+    if (!this.udp || !this.udpInfo) return
+
+    if (this.state?.status === 'connected' && this.lastUdpKeepAliveAckAt > 0) {
+      const timeoutMs = Math.max(30000, (this.udpKeepAliveIntervalMs || 15000) * 4)
+      if (Date.now() - this.lastUdpKeepAliveAckAt > timeoutMs) {
+        this.emit(
+          'error',
+          new Error(
+            `Voice UDP keepalive ACK timeout (${timeoutMs}ms) for guild ${this.guildId}`
+          )
+        )
+        this._reconnectTransport(
+          'udp_keepalive_timeout',
+          4001,
+          'UDP keepalive ACK timeout'
+        )
+        return
+      }
+    }
+
+    const packet = Buffer.allocUnsafe(8)
+    packet.writeUInt32BE(this.udpKeepAliveCounter >>> 0, 0)
+    packet.writeUInt32BE(0, 4)
+    this.udpKeepAliveCounter = (this.udpKeepAliveCounter + 1) >>> 0
+    this.lastUdpKeepAliveSentAt = Date.now()
+    this.udpSend(packet)
+  }
+
+  _startUdpKeepAlive() {
+    this._clearUdpKeepAlive()
+    if (!this.udp || !this.udpInfo) return
+
+    this.udpKeepAliveIntervalMs = 15000
+    this._sendUdpKeepAlive()
+    this.udpKeepAliveInterval = setInterval(() => {
+      // Keep NAT mapping alive during long idle voice sessions.
+      this._sendUdpKeepAlive()
+    }, this.udpKeepAliveIntervalMs)
+    this.udpKeepAliveInterval.unref?.()
+  }
+
+  _reconnectTransport(reason = 'reconnecting', closeCode = 4000, closeReason) {
+    if (!this.voiceServer || !this.sessionId) {
+      this._destroy(
+        {
+          status: 'disconnected',
+          reason,
+          code: closeCode,
+          closeReason: closeReason ?? reason
+        },
+        false
+      )
+      return
+    }
+
+    this._destroyConnection(closeCode, closeReason ?? reason)
+    this._updateState({
+      status: 'reconnecting',
+      reason,
+      code: closeCode,
+      closeReason: closeReason ?? reason
+    })
+    this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
+
+    this.connect(() => {
+      if (this.audioStream) this.unpause('reconnected')
+    }, true)
   }
 
   _initMLSSessionIfNeeded(protocolVersionHint) {
@@ -677,6 +817,10 @@ class Connection extends EventEmitter {
     }
 
     this._updateState({ status: 'connecting' })
+    this._clearHeartbeatAckTimeout()
+    this.heartbeatIntervalMs = 0
+    this.lastHeartbeatSentAt = 0
+    this.lastHeartbeatAckAt = 0
 
     if (this.connectTimeout) clearTimeout(this.connectTimeout)
     this.connectTimeout = setTimeout(() => {
@@ -848,14 +992,10 @@ class Connection extends EventEmitter {
         clearTimeout(this.connectTimeout)
         this.connectTimeout = null
       }
+      this._clearHeartbeatAckTimeout()
 
       if (closeCode?.reconnect) {
-        this._destroyConnection(code, reason)
-        this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
-
-        this.connect(() => {
-          if (this.audioStream) this.unpause('reconnected')
-        }, true)
+        this._reconnectTransport('discord_close', code, reason)
       } else {
         this._destroy(
           {
@@ -898,6 +1038,10 @@ class Connection extends EventEmitter {
         this.udp = dgram.createSocket('udp4')
 
         this.udp.on('message', (data) => {
+          if (data.length <= 8) {
+            this.lastUdpKeepAliveAckAt = Date.now()
+            return
+          }
           if (data.length <= 12 || data.readUInt8(1) !== 0x78) return
 
           const ssrc = data.readUInt32BE(8)
@@ -1011,7 +1155,12 @@ class Connection extends EventEmitter {
             else return
           }
 
-          if (packet.equals(OPUS_SILENCE_FRAME)) {
+          if (
+            packet.length === OPUS_SILENCE_FRAME_LENGTH &&
+            packet[0] === 0xf8 &&
+            packet[1] === 0xff &&
+            packet[2] === 0xfe
+          ) {
             if (userData.stream._readableState.ended) return
             this.emit('speakEnd', userData.userId, ssrc)
             userData.stream.push(null)
@@ -1060,6 +1209,7 @@ class Connection extends EventEmitter {
 
         this._updateState({ status: 'connected' })
         this._updatePlayerState({ status: 'idle', reason: 'connected' })
+        this._startUdpKeepAlive()
 
         const serverVersion = payload.d.dave_protocol_version ?? 0
 
@@ -1091,13 +1241,27 @@ class Connection extends EventEmitter {
 
       case 6: {
         this.ping = Date.now() - payload.d.t
+        this.lastHeartbeatAckAt = Date.now()
+        this._armHeartbeatAckTimeout()
         break
       }
 
       case 8: {
+        if (this.hbInterval) {
+          clearInterval(this.hbInterval)
+          this.hbInterval = null
+        }
+
+        this.heartbeatIntervalMs = Math.max(
+          1,
+          Number(payload.d.heartbeat_interval) || 0
+        )
+
+        this._sendHeartbeat()
         this.hbInterval = setInterval(() => {
-          this._wsSendJSON(3, { t: Date.now(), seq_ack: this.lastSequence })
-        }, payload.d.heartbeat_interval)
+          this._sendHeartbeat()
+        }, this.heartbeatIntervalMs)
+        this.hbInterval.unref?.()
 
         break
       }
@@ -1421,6 +1585,11 @@ class Connection extends EventEmitter {
       clearInterval(this.hbInterval)
       this.hbInterval = null
     }
+    this._clearHeartbeatAckTimeout()
+    this.heartbeatIntervalMs = 0
+    this.lastHeartbeatSentAt = 0
+    this.lastHeartbeatAckAt = 0
+    this._clearUdpKeepAlive()
     if (this.playTimeout) {
       clearTimeout(this.playTimeout)
       this.playTimeout = null
