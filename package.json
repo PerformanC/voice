@@ -22,7 +22,7 @@
   "homepage": "https://github.com/PerformanC/voice#readme",
   "dependencies": {
     "@performanc/pwsl": "github:PerformanC/Internals#PWSL",
-    "@snazzah/davey": "^0.1.9"
+    "@snazzah/davey": "^0.1.10"
   },
   "optionalDependencies": {
     "libsodium-wrappers": "^0.8.2",
