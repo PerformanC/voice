@@ -430,6 +430,8 @@ class Connection extends EventEmitter {
     this.voiceServer = null
 
     this.hbInterval = null
+    this.hbIntervalMissed = 0
+    this.udpKeepAliveInterval = null
     this.udpInfo = null
     this.udp = null
 
@@ -1033,6 +1035,16 @@ class Connection extends EventEmitter {
 
         const serverInfo = await this._ipDiscovery()
 
+        if (this.udpKeepAliveInterval) clearInterval(this.udpKeepAliveInterval)
+        this.udpKeepAliveInterval = setInterval(() => {
+          if (!this.udp || !this.udpInfo) return
+          const discoveryBuffer = Buffer.alloc(74)
+          discoveryBuffer.writeUInt16BE(1, 0)
+          discoveryBuffer.writeUInt16BE(70, 2)
+          discoveryBuffer.writeUInt32BE(this.udpInfo.ssrc, 4)
+          this.udpSend(discoveryBuffer)
+        }, 10000)
+
         this._wsSendJSON(1, {
           protocol: 'udp',
           data: {
@@ -1090,12 +1102,25 @@ class Connection extends EventEmitter {
       }
 
       case 6: {
+        this.hbIntervalMissed = 0
         this.ping = Date.now() - payload.d.t
         break
       }
 
       case 8: {
+        if (this.hbInterval) clearInterval(this.hbInterval)
+
         this.hbInterval = setInterval(() => {
+          if (this.hbIntervalMissed >= 3) {
+            if (this.hbInterval) clearInterval(this.hbInterval)
+            this.hbInterval = null
+
+            if (this.ws) this.ws.close(4015, 'Heartbeat timeout')
+
+            return
+          }
+
+          this.hbIntervalMissed++
           this._wsSendJSON(3, { t: Date.now(), seq_ack: this.lastSequence })
         }, payload.d.heartbeat_interval)
 
@@ -1171,6 +1196,10 @@ class Connection extends EventEmitter {
             this.mlsSession.prepareEpoch(payload.d)
             if (payload.d?.epoch === 1)
               this._ensureKeyPackageSent('op24 epoch=1')
+
+            this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
+              transition_id: payload.d.transition_id
+            })
           } catch (e) {
             this.emit(
               'error',
@@ -1433,6 +1462,10 @@ class Connection extends EventEmitter {
       clearTimeout(this.connectTimeout)
       this.connectTimeout = null
     }
+    if (this.udpKeepAliveInterval) {
+      clearInterval(this.udpKeepAliveInterval)
+      this.udpKeepAliveInterval = null
+    }
 
     this.player = {
       sequence: 0,
@@ -1509,6 +1542,14 @@ class Connection extends EventEmitter {
     }
 
     this.voiceServer = { token, endpoint }
+
+    if (this.ws && (this.state.status === 'connected' || this.state.status === 'connecting')) {
+      this.connect()
+    }
+  }
+
+  getSpeakStream(ssrc) {
+    return ssrcs[ssrc]?.stream
   }
 }
 
