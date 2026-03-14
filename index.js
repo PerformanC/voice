@@ -32,7 +32,7 @@ const DISCORD_CLOSE_CODES = {
   4015: { reconnect: true }
 }
 
-const ssrcs = {}
+const ssrcs = new Map()
 
 const TRANSITION_EXPIRY = 10
 const TRANSITION_EXPIRY_PENDING_DOWNGRADE = 24
@@ -876,13 +876,13 @@ class Connection extends EventEmitter {
 
   _cleanupSSRCsForUserId(userId) {
     const uid = String(userId)
-    for (const [ssrcStr, entry] of Object.entries(ssrcs)) {
+    for (const [ssrc, entry] of ssrcs) {
       if (entry?.userId === uid) {
         try {
           if (entry.stream && !entry.stream.readableEnded)
             entry.stream.push(null)
         } catch {}
-        delete ssrcs[ssrcStr]
+        ssrcs.delete(ssrc)
       }
     }
   }
@@ -900,14 +900,17 @@ class Connection extends EventEmitter {
         this.udp = dgram.createSocket('udp4')
 
         this.udp.on('message', (data) => {
-          if (data.length <= 12 || data.readUInt8(1) !== 0x78) return
-
-          const ssrc = data.readUInt32BE(8)
-          const userData = ssrcs[ssrc]
-          if (!userData || !this.udpInfo.secretKey) return
+          if (data.length <= 12) return
 
           const rtpVersion = data[0] >> 6
           if (rtpVersion !== 2) return
+
+          const payloadType = data[1] & 0x7f
+          if (payloadType !== 0x78) return
+
+          const ssrc = data.readUInt32BE(8)
+          const userData = ssrcs.get(ssrc)
+          if (!userData || !this.udpInfo.secretKey) return
 
           const hasPadding = !!(data[0] & 0b100000)
           const hasExtension = !!(data[0] & 0b10000)
@@ -921,9 +924,10 @@ class Connection extends EventEmitter {
 
           let headerSize = 12 + cc * 4
           let extensionLengthInWords = 0
+          if (data.length < headerSize) return
 
           if (hasExtension) {
-            if (data.readUInt16BE(headerSize) !== 0xbede) return
+            if (data.length < headerSize + 4) return
             extensionLengthInWords = data.readUInt16BE(headerSize + 2)
             headerSize += 4
           }
@@ -990,20 +994,26 @@ class Connection extends EventEmitter {
             return
           }
 
+          if (!decryptedPacket || decryptedPacket.length === 0) return
+
           if (hasPadding) {
             const paddingAmount = decryptedPacket.readUInt8(
               decryptedPacket.length - 1
             )
-            if (paddingAmount < decryptedPacket.length)
+            if (paddingAmount > 0) {
+              if (paddingAmount >= decryptedPacket.length) return
               decryptedPacket = decryptedPacket.subarray(
                 0,
                 decryptedPacket.length - paddingAmount
               )
+            }
           }
 
           const extensionDataLength = extensionLengthInWords * 4
-          if (hasExtension && extensionDataLength > 0)
+          if (hasExtension) {
+            if (extensionDataLength > decryptedPacket.length) return
             decryptedPacket = decryptedPacket.subarray(extensionDataLength)
+          }
 
           let packet = decryptedPacket
 
@@ -1091,12 +1101,12 @@ class Connection extends EventEmitter {
       }
 
       case 5: {
-        ssrcs[payload.d.ssrc] = {
+        ssrcs.set(payload.d.ssrc, {
           userId: payload.d.user_id,
           stream:
-            ssrcs[payload.d.ssrc]?.stream ??
+            ssrcs.get(payload.d.ssrc)?.stream ??
             new PassThrough({ objectMode: true })
-        }
+        })
         this.emit('speakStart', payload.d.user_id, payload.d.ssrc)
         break
       }
@@ -1549,7 +1559,7 @@ class Connection extends EventEmitter {
   }
 
   getSpeakStream(ssrc) {
-    return ssrcs[ssrc]?.stream
+    return ssrcs.get(ssrc)?.stream
   }
 }
 
@@ -1558,7 +1568,7 @@ function joinVoiceChannel(obj) {
 }
 
 function getSpeakStream(ssrc) {
-  return ssrcs[ssrc]?.stream
+  return ssrcs.get(ssrc)?.stream
 }
 
 export default {
