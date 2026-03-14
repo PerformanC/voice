@@ -1207,9 +1207,12 @@ class Connection extends EventEmitter {
             if (payload.d?.epoch === 1)
               this._ensureKeyPackageSent('op24 epoch=1')
 
-            this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
-              transition_id: payload.d.transition_id
-            })
+            const transitionId = payload.d?.transition_id
+            if (typeof transitionId === 'number') {
+              this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
+                transition_id: transitionId
+              })
+            }
           } catch (e) {
             this.emit(
               'error',
