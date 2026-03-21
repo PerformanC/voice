@@ -347,7 +347,8 @@ class VoiceMLS extends EventEmitter {
     const downgradePending = this._hasPendingDowngrade()
     if (downgradePending) return packet
 
-    if (this.protocolVersion === 0 || !this.session?.ready) return packet
+    if (this.protocolVersion === 0) return packet
+    if (!this.session?.ready) return null
 
     try {
       const encrypted = this.session.encryptOpus(packet)
@@ -360,7 +361,7 @@ class VoiceMLS extends EventEmitter {
           this.recoverFromInvalidTransition(this.lastTransitionId ?? 0)
         }
       }
-      return packet
+      return null
     }
   }
 
@@ -1138,6 +1139,9 @@ class Connection extends EventEmitter {
       }
 
       case 9: {
+        if (cb) cb()
+        this._updateState({ status: 'connected' })
+        this._updatePlayerState({ status: 'idle', reason: 'reconnected' })
         break
       }
 
@@ -1231,6 +1235,7 @@ class Connection extends EventEmitter {
 
     if (this.mlsSession) {
       chunk = this.mlsSession.encrypt(chunk)
+      if (!chunk) return
     }
 
     this.packetBuffer.writeUInt8(0x80, 0)
