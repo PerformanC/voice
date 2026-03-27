@@ -26,6 +26,7 @@
   },
   "optionalDependencies": {
     "libsodium-wrappers": "^0.8.2",
-    "sodium-native": "^5.0.10"
+    "sodium-native": "^5.1.0",
+    "@toddynnn/udpqueue": "^1.0.4"
   }
 }

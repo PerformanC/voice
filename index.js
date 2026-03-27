@@ -1,15 +1,47 @@
-import EventEmitter from 'node:events'
-import dgram from 'node:dgram'
 import crypto from 'node:crypto'
+import dgram from 'node:dgram'
+import EventEmitter from 'node:events'
 import { PassThrough } from 'node:stream'
 import WebSocket from '@performanc/pwsl'
 import Sodium from './sodium.js'
+
+let _NativeQueueManager = null
+let sharedNativeQueue = null
+
+try {
+  const mod = await import('@toddynnn/udpqueue')
+  _NativeQueueManager =
+    mod?.UdpQueueManager ?? mod?.default?.UdpQueueManager ?? null
+
+  if (!_NativeQueueManager) {
+    throw new Error('UdpQueueManager export not found')
+  }
+
+  const mgr = new _NativeQueueManager(400)
+
+  let _localAddr = '(localAddress unavailable)'
+  if (typeof mgr.localAddress === 'function') {
+    try {
+      _localAddr = mgr.localAddress()
+    } catch {}
+  }
+
+  sharedNativeQueue = mgr
+} catch (err) {
+  _NativeQueueManager = null
+  sharedNativeQueue = null
+
+  console.log(
+    '[VoiceUDP] @toddynnn/udpqueue not available — falling back to JS setTimeout pacing'
+  )
+  console.log(`[VoiceUDP]    Reason: ${err?.message ?? err}`)
+}
 
 let MLS = null
 try {
   const lib = await import('@snazzah/davey')
   MLS = lib
-} catch (err) {
+} catch {
   // MLS not available
 }
 
@@ -32,10 +64,13 @@ const DISCORD_CLOSE_CODES = {
   4015: { reconnect: true }
 }
 
-const ssrcs = new Map()
+const ssrcRegistry = new Map()
+
+function makeSsrcRegistryKey(guildId, ssrc) {
+  return `${guildId}:${ssrc}`
+}
 
 const TRANSITION_EXPIRY = 10
-const TRANSITION_EXPIRY_PENDING_DOWNGRADE = 24
 const DEFAULT_DECRYPTION_FAILURE_TOLERANCE = 36
 
 const DAVE_OPCODES = {
@@ -71,10 +106,12 @@ function tryParseJSONFromBuffer(buf) {
       buf[offset] === 0x0a ||
       buf[offset] === 0x0d ||
       buf[offset] === 0x09)
-  )
+  ) {
     offset++
+  }
 
   if (offset >= buf.length) return null
+
   const first = buf[offset]
   if (first !== 0x7b && first !== 0x5b) return null
 
@@ -82,6 +119,7 @@ function tryParseJSONFromBuffer(buf) {
     const obj = JSON.parse(buf.subarray(offset).toString('utf8'))
     if (obj && typeof obj === 'object' && typeof obj.op === 'number') return obj
   } catch {}
+
   return null
 }
 
@@ -89,10 +127,11 @@ class VoiceMLS extends EventEmitter {
   constructor(protocolVersion, userId, channelId, MLS, options = {}) {
     super()
 
-    if (!MLS)
+    if (!MLS) {
       throw new Error(
         'MLS library (@snazzah/davey) is required but not available'
       )
+    }
 
     this.MLS = MLS
     this.protocolVersion = protocolVersion
@@ -185,7 +224,6 @@ class VoiceMLS extends EventEmitter {
     if (!this.session) throw new Error('No session available')
 
     this.externalSender = Buffer.from(externalSender)
-
     this.session.setExternalSender(externalSender)
     this.externalSenderSet = true
   }
@@ -271,8 +309,9 @@ class VoiceMLS extends EventEmitter {
     this.reinit({ emitKeyPackage: false })
 
     setTimeout(() => {
-      if (this.protocolVersion === 0)
+      if (this.protocolVersion === 0) {
         this.protocolVersion = currentProtocolVersion
+      }
       this.emit('invalidateTransition', transitionId)
       this.reinit({ emitKeyPackage: true })
     }, 20)
@@ -366,7 +405,15 @@ class VoiceMLS extends EventEmitter {
   }
 
   decrypt(packet, userId) {
-    if (packet.length === OPUS_SILENCE_FRAME_LENGTH && packet[0] === 0xf8 && packet[1] === 0xff && packet[2] === 0xfe) return packet
+    if (
+      packet.length === OPUS_SILENCE_FRAME_LENGTH &&
+      packet[0] === 0xf8 &&
+      packet[1] === 0xff &&
+      packet[2] === 0xfe
+    ) {
+      return packet
+    }
+
     if (!this.session?.ready) return packet
 
     const canTry =
@@ -451,6 +498,7 @@ class Connection extends EventEmitter {
       this.encryption === 'aead_aes256_gcm_rtpsize'
         ? Buffer.alloc(12)
         : Buffer.alloc(24)
+
     this._recvNonce24 = Buffer.alloc(24)
     this._recvNonce12 = this._recvNonce24.subarray(0, 12)
     this.packetBuffer = Buffer.allocUnsafe(12)
@@ -469,6 +517,48 @@ class Connection extends EventEmitter {
     this.pendingProposals = []
     this.connectedUserIds = new Set()
     this._keyPackageSent = false
+    this._silenceKeepaliveTimer = null
+
+    this._nativeQueueManager = obj.nativeQueueManager ?? null
+    this._nativeQueueKey = null
+    this._loggedTransport = false
+    this._privateQueueManager = false
+
+    if (
+      !this._nativeQueueManager &&
+      _NativeQueueManager &&
+      !obj?.useSharedQueue
+    ) {
+      try {
+        this._nativeQueueManager = new _NativeQueueManager(400)
+        this._privateQueueManager = true
+      } catch {
+        this._nativeQueueManager = sharedNativeQueue
+      }
+    }
+
+    if (!this._nativeQueueManager) {
+      this._nativeQueueManager = sharedNativeQueue
+    }
+
+    this.ssrcs = new Map()
+
+    this._boundMarkAsStoppable = () => this._markAsStoppable()
+  }
+
+  _getRegistryKey(ssrc) {
+    return makeSsrcRegistryKey(this.guildId, ssrc)
+  }
+
+  _registerSSRC(ssrc) {
+    ssrcRegistry.set(this._getRegistryKey(ssrc), this)
+  }
+
+  _unregisterSSRC(ssrc) {
+    const key = this._getRegistryKey(ssrc)
+    if (ssrcRegistry.get(key) === this) {
+      ssrcRegistry.delete(key)
+    }
   }
 
   _updateState(state) {
@@ -483,8 +573,7 @@ class Connection extends EventEmitter {
 
   _wsSendJSON(op, d) {
     if (!this.ws) return
-    const payload = JSON.stringify({ op, d })
-    this.ws.send(payload)
+    this.ws.send(JSON.stringify({ op, d }))
   }
 
   _wsSendBinary(opcode, payload) {
@@ -517,12 +606,7 @@ class Connection extends EventEmitter {
 
   _initMLSSessionIfNeeded(protocolVersionHint) {
     if (!MLS) return
-
-    if (!this.channelId) {
-      // Silently skip DAVE support when channelId is not set
-      return
-    }
-
+    if (!this.channelId) return
     if (this.mlsSession) return
 
     const initialVersion =
@@ -564,9 +648,7 @@ class Connection extends EventEmitter {
       }
 
       this.mlsSession.flushKeyPackage()
-
       this._drainBufferedProposals()
-
       this._keyPackageSent = true
     } catch (error) {
       this.emit(
@@ -576,9 +658,8 @@ class Connection extends EventEmitter {
     }
   }
 
-  _ensureKeyPackageSent(reason) {
+  _ensureKeyPackageSent(_reason) {
     if (!MLS) return
-
     if (this._keyPackageSent) return
 
     if (!this.mlsSession) {
@@ -591,10 +672,11 @@ class Connection extends EventEmitter {
       const kp =
         this.mlsSession._pendingKeyPackage ??
         this.mlsSession.session?.getSerializedKeyPackage?.()
+
       if (kp && this.ws) {
         this._wsSendBinary(DAVE_OPCODES.KEY_PACKAGE, kp)
       }
-    } catch (e) {
+    } catch {
       // Failed to send key package
     }
   }
@@ -632,11 +714,14 @@ class Connection extends EventEmitter {
   }
 
   udpSend(data, cb) {
-    if (!this.udp) return
-    if (!cb)
+    if (!this.udp || !this.udpInfo) return
+
+    if (!cb) {
       cb = (error) => {
         if (error) this.emit('error', error)
       }
+    }
+
     this.udp.send(data, this.udpInfo.port, this.udpInfo.ip, cb)
   }
 
@@ -645,26 +730,198 @@ class Connection extends EventEmitter {
     this._wsSendJSON(5, { speaking: value, delay: 0, ssrc: this.udpInfo.ssrc })
   }
 
-  _ipDiscovery() {
-    return new Promise((resolve) => {
-      this.udp.once('message', (message) => {
-        const data = message.readUInt16BE(0)
-        if (data !== 2) return
+  _ipDiscovery(timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      const udp = this.udp
+      const udpInfo = this.udpInfo
 
-        const packet = message
-        resolve({
-          ip: packet.subarray(8, packet.indexOf(0, 8)).toString('utf8'),
-          port: packet.readUInt16BE(packet.length - 2)
+      if (!udp || !udpInfo) {
+        reject(new Error('UDP socket not ready for IP discovery'))
+        return
+      }
+
+      let settled = false
+      let timer = null
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer)
+          timer = null
+        }
+        udp.off('message', onMessage)
+        udp.off('error', onError)
+        udp.off('close', onClose)
+      }
+
+      const finish = (fn, value) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        fn(value)
+      }
+
+      const onMessage = (message) => {
+        if (!message || message.length < 10) return
+
+        const type = message.readUInt16BE(0)
+        if (type !== 2) return
+
+        const zeroIndex = message.indexOf(0, 8)
+        if (zeroIndex === -1) return
+        if (message.length < 2) return
+
+        finish(resolve, {
+          ip: message.subarray(8, zeroIndex).toString('utf8'),
+          port: message.readUInt16BE(message.length - 2)
         })
-      })
+      }
+
+      const onError = (err) => finish(reject, err)
+      const onClose = () =>
+        finish(reject, new Error('UDP closed during IP discovery'))
+
+      timer = setTimeout(() => {
+        finish(reject, new Error(`IP discovery timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+
+      udp.on('message', onMessage)
+      udp.on('error', onError)
+      udp.on('close', onClose)
 
       const discoveryBuffer = Buffer.alloc(74)
       discoveryBuffer.writeUInt16BE(1, 0)
       discoveryBuffer.writeUInt16BE(70, 2)
-      discoveryBuffer.writeUInt32BE(this.udpInfo.ssrc, 4)
+      discoveryBuffer.writeUInt32BE(udpInfo.ssrc, 4)
 
-      this.udpSend(discoveryBuffer)
+      udp.send(discoveryBuffer, udpInfo.port, udpInfo.ip, (error) => {
+        if (error) finish(reject, error)
+      })
     })
+  }
+
+  _setupNativeQueue(ip, port) {
+    if (!this._nativeQueueManager) return
+
+    const hasCreate = typeof this._nativeQueueManager.createQueue === 'function'
+    const hasUpdate =
+      typeof this._nativeQueueManager.updateQueueTarget === 'function'
+    const hasDelete = typeof this._nativeQueueManager.deleteQueue === 'function'
+
+    if (!hasCreate) {
+      this._nativeQueueKey = null
+      return
+    }
+
+    if (this._nativeQueueKey !== null && hasUpdate) {
+      try {
+        this._nativeQueueManager.updateQueueTarget(
+          this._nativeQueueKey,
+          ip,
+          port
+        )
+        return
+      } catch {
+        if (hasDelete) {
+          try {
+            this._nativeQueueManager.deleteQueue(this._nativeQueueKey)
+          } catch {}
+        }
+
+        this._nativeQueueKey = null
+      }
+    }
+
+    if (this._nativeQueueKey !== null && !hasUpdate && hasDelete) {
+      try {
+        this._nativeQueueManager.deleteQueue(this._nativeQueueKey)
+      } catch {}
+      this._nativeQueueKey = null
+    }
+
+    try {
+      this._nativeQueueKey = this._nativeQueueManager.createQueue(ip, port, 400)
+    } catch {
+      this._nativeQueueKey = null
+    }
+  }
+
+  _sendPacketViaQueue(packet) {
+    if (this._nativeQueueKey === null || !this._nativeQueueManager) {
+      this._loggedTransport = true
+      return false
+    }
+
+    const queued = this._nativeQueueManager.pushPacket(
+      this._nativeQueueKey,
+      packet
+    )
+
+    this._loggedTransport = true
+
+    this.player.lastPacketTime = Date.now()
+    if (queued) {
+      this.statistics.packetsSent++
+    } else {
+      if (typeof this._nativeQueueManager.sendNow === 'function') {
+        const sent = this._nativeQueueManager.sendNow(
+          this._nativeQueueKey,
+          packet
+        )
+        if (sent) this.statistics.packetsSent++
+        else this.statistics.packetsLost++
+      } else {
+        this.statistics.packetsLost++
+      }
+    }
+    this.statistics.packetsExpected++
+
+    return true
+  }
+
+  _clearNativeQueue() {
+    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
+    if (typeof this._nativeQueueManager.clearQueue !== 'function') return
+
+    try {
+      this._nativeQueueManager.clearQueue(this._nativeQueueKey)
+    } catch {}
+  }
+
+  _destroyNativeQueue() {
+    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
+    if (typeof this._nativeQueueManager.deleteQueue !== 'function') {
+      this._nativeQueueKey = null
+      return
+    }
+
+    try {
+      this._nativeQueueManager.deleteQueue(this._nativeQueueKey)
+    } catch {}
+
+    this._nativeQueueKey = null
+  }
+
+  _startSilenceKeepalive() {
+    if (this._silenceKeepaliveTimer) return
+
+    this._silenceKeepaliveTimer = setInterval(() => {
+      if (
+        !this.udpInfo ||
+        !this.udpInfo.secretKey ||
+        this.connectedUserIds.size > 0
+      ) {
+        this._stopSilenceKeepalive()
+        return
+      }
+
+      this.sendAudioChunk(OPUS_SILENCE_FRAME)
+    }, 200)
+  }
+
+  _stopSilenceKeepalive() {
+    if (!this._silenceKeepaliveTimer) return
+    clearInterval(this._silenceKeepaliveTimer)
+    this._silenceKeepaliveTimer = null
   }
 
   connect(cb, reconnection) {
@@ -731,6 +988,7 @@ class Connection extends EventEmitter {
         } catch {
           return
         }
+
         if (typeof payload.seq === 'number') this.lastSequence = payload.seq
         return this._handleJSON(payload, cb)
       }
@@ -792,7 +1050,7 @@ class Connection extends EventEmitter {
             if (response) {
               this._wsSendBinary(DAVE_OPCODES.COMMIT_WELCOME, response)
             }
-          } catch (e) {
+          } catch {
             // Ignoring proposals
           }
 
@@ -877,13 +1135,15 @@ class Connection extends EventEmitter {
 
   _cleanupSSRCsForUserId(userId) {
     const uid = String(userId)
-    for (const [ssrc, entry] of ssrcs) {
+    for (const [ssrc, entry] of this.ssrcs) {
       if (entry?.userId === uid) {
         try {
-          if (entry.stream && !entry.stream.readableEnded)
+          if (entry.stream && !entry.stream.readableEnded) {
             entry.stream.push(null)
+          }
         } catch {}
-        ssrcs.delete(ssrc)
+        this.ssrcs.delete(ssrc)
+        this._unregisterSSRC(ssrc)
       }
     }
   }
@@ -910,16 +1170,18 @@ class Connection extends EventEmitter {
           if (payloadType !== 0x78) return
 
           const ssrc = data.readUInt32BE(8)
-          const userData = ssrcs.get(ssrc)
-          if (!userData || !this.udpInfo.secretKey) return
+          const userData = this.ssrcs.get(ssrc)
+          if (!userData || !this.udpInfo?.secretKey) return
 
           const hasPadding = !!(data[0] & 0b100000)
           const hasExtension = !!(data[0] & 0b10000)
           const cc = data[0] & 0b1111
+
           const nonce =
             this.encryption === 'aead_aes256_gcm_rtpsize'
               ? this._recvNonce12
               : this._recvNonce24
+
           nonce.fill(0)
           data.copy(nonce, 0, data.length - 4, data.length)
 
@@ -1025,11 +1287,11 @@ class Connection extends EventEmitter {
           }
 
           if (packet.equals(OPUS_SILENCE_FRAME)) {
-            if (userData.stream._readableState.ended) return
+            if (userData.stream.readableEnded) return
             this.emit('speakEnd', userData.userId, ssrc)
             userData.stream.push(null)
           } else {
-            if (userData.stream._readableState.ended) {
+            if (userData.stream.readableEnded) {
               userData.stream = new PassThrough({ objectMode: true })
               this.emit('speakStart', userData.userId, ssrc)
             }
@@ -1044,15 +1306,29 @@ class Connection extends EventEmitter {
           this._destroy({ status: 'disconnected' })
         })
 
-        const serverInfo = await this._ipDiscovery()
+        let serverInfo
+        try {
+          serverInfo = await this._ipDiscovery()
+        } catch (error) {
+          this.emit('error', error)
+          this._destroy(
+            { status: 'disconnected', reason: 'ip_discovery_failed' },
+            false
+          )
+          return
+        }
+
+        this._setupNativeQueue(this.udpInfo.ip, this.udpInfo.port)
 
         if (this.udpKeepAliveInterval) clearInterval(this.udpKeepAliveInterval)
         this.udpKeepAliveInterval = setInterval(() => {
           if (!this.udp || !this.udpInfo) return
+
           const discoveryBuffer = Buffer.alloc(74)
           discoveryBuffer.writeUInt16BE(1, 0)
           discoveryBuffer.writeUInt16BE(70, 2)
           discoveryBuffer.writeUInt32BE(this.udpInfo.ssrc, 4)
+
           this.udpSend(discoveryBuffer)
         }, 10000)
 
@@ -1102,13 +1378,15 @@ class Connection extends EventEmitter {
       }
 
       case 5: {
-        ssrcs.set(payload.d.ssrc, {
+        const ssrcVal = payload.d.ssrc
+        this.ssrcs.set(ssrcVal, {
           userId: payload.d.user_id,
           stream:
-            ssrcs.get(payload.d.ssrc)?.stream ??
+            this.ssrcs.get(ssrcVal)?.stream ??
             new PassThrough({ objectMode: true })
         })
-        this.emit('speakStart', payload.d.user_id, payload.d.ssrc)
+        this._registerSSRC(ssrcVal)
+        this.emit('speakStart', payload.d.user_id, ssrcVal)
         break
       }
 
@@ -1127,7 +1405,6 @@ class Connection extends EventEmitter {
             this.hbInterval = null
 
             if (this.ws) this.ws.close(4015, 'Heartbeat timeout')
-
             return
           }
 
@@ -1148,6 +1425,10 @@ class Connection extends EventEmitter {
       case 11: {
         const ids = payload.d?.user_ids ?? []
         for (const id of ids) this.connectedUserIds.add(String(id))
+        if (this.connectedUserIds.size > 0) {
+          this._stopSilenceKeepalive()
+          this.emit('channelNotEmpty')
+        }
         break
       }
 
@@ -1157,6 +1438,10 @@ class Connection extends EventEmitter {
           const uid = String(id)
           this.connectedUserIds.delete(uid)
           this._cleanupSSRCsForUserId(uid)
+        }
+        if (this.connectedUserIds.size === 0) {
+          this._startSilenceKeepalive()
+          this.emit('channelEmpty')
         }
         break
       }
@@ -1208,8 +1493,10 @@ class Connection extends EventEmitter {
         if (this.mlsSession) {
           try {
             this.mlsSession.prepareEpoch(payload.d)
-            if (payload.d?.epoch === 1)
+
+            if (payload.d?.epoch === 1) {
               this._ensureKeyPackageSent('op24 epoch=1')
+            }
 
             const transitionId = payload.d?.transition_id
             if (typeof transitionId === 'number') {
@@ -1263,13 +1550,17 @@ class Connection extends EventEmitter {
           this.nonceBuffer
         )
         cipher.setAAD(this.packetBuffer)
+
         const ciphertext = cipher.update(chunk)
         const final = cipher.final()
         const authTag = cipher.getAuthTag()
+
         const packet = Buffer.allocUnsafe(
           12 + ciphertext.length + final.length + authTag.length + 4
         )
+
         this.packetBuffer.copy(packet, 0)
+
         let off = 12
         ciphertext.copy(packet, off)
         off += ciphertext.length
@@ -1278,6 +1569,8 @@ class Connection extends EventEmitter {
         authTag.copy(packet, off)
         off += authTag.length
         packet.writeUInt32BE(this.nonce, off)
+
+        if (this._sendPacketViaQueue(packet)) return
 
         this.player.lastPacketTime = Date.now()
         this.udpSend(packet, (error) => {
@@ -1292,6 +1585,7 @@ class Connection extends EventEmitter {
         const abytes = Sodium.ABYTES ?? 16
         const cipherLen = chunk.length + abytes
         const packet = Buffer.allocUnsafe(12 + cipherLen + 4)
+
         this.packetBuffer.copy(packet, 0)
 
         const out = packet.subarray(12, 12 + cipherLen)
@@ -1315,6 +1609,8 @@ class Connection extends EventEmitter {
         }
 
         packet.writeUInt32BE(this.nonce, 12 + cipherLen)
+
+        if (this._sendPacketViaQueue(packet)) return
 
         this.player.lastPacketTime = Date.now()
         this.udpSend(packet, (error) => {
@@ -1349,7 +1645,10 @@ class Connection extends EventEmitter {
         }
 
         this.statistics = { packetsSent: 0, packetsLost: 0, packetsExpected: 0 }
-        oldAudioStream.removeListener('finishBuffering', this._markAsStoppable)
+        oldAudioStream.removeListener(
+          'finishBuffering',
+          this._boundMarkAsStoppable
+        )
       }
 
       this.audioStream = audioStream
@@ -1360,8 +1659,13 @@ class Connection extends EventEmitter {
   }
 
   stop(reason) {
-    clearTimeout(this.playTimeout)
-    this.playTimeout = null
+    this._stopSilenceKeepalive()
+    this._clearNativeQueue()
+
+    if (this.playTimeout) {
+      clearTimeout(this.playTimeout)
+      this.playTimeout = null
+    }
 
     if (this.challengeTimeout) {
       clearTimeout(this.challengeTimeout)
@@ -1369,6 +1673,10 @@ class Connection extends EventEmitter {
     }
 
     if (this.audioStream) {
+      this.audioStream.removeListener(
+        'finishBuffering',
+        this._boundMarkAsStoppable
+      )
       this.audioStream.destroy()
       this.audioStream.removeAllListeners()
       this.audioStream = null
@@ -1378,6 +1686,7 @@ class Connection extends EventEmitter {
     this._updatePlayerState({ status: 'idle', reason: reason ?? 'stopped' })
 
     for (let i = 0; i < 5; i++) this.sendAudioChunk(OPUS_SILENCE_FRAME)
+
     this._wsSendJSON(5, {
       speaking: 0,
       delay: 0,
@@ -1386,10 +1695,16 @@ class Connection extends EventEmitter {
   }
 
   pause(reason) {
+    this._clearNativeQueue()
+
     this._updatePlayerState({ status: 'idle', reason: reason ?? 'paused' })
     this._setSpeaking(0)
 
-    clearTimeout(this.playTimeout)
+    if (this.playTimeout) {
+      clearTimeout(this.playTimeout)
+      this.playTimeout = null
+    }
+
     if (this.challengeTimeout) {
       clearTimeout(this.challengeTimeout)
       this.challengeTimeout = null
@@ -1397,7 +1712,7 @@ class Connection extends EventEmitter {
   }
 
   _markAsStoppable() {
-    this.audioStream.canStop = true
+    if (this.audioStream) this.audioStream.canStop = true
   }
 
   _packetInterval() {
@@ -1424,14 +1739,12 @@ class Connection extends EventEmitter {
             this.challengeTimeout = null
           }
           this.sendAudioChunk(chunk)
-        } else {
-          if (!this.challengeTimeout) {
-            this.challengeTimeout = setTimeout(() => {
-              this.emit('stuck')
-              this.challengeTimeout = null
-              this.pause('stuck')
-            }, 2000)
-          }
+        } else if (!this.challengeTimeout) {
+          this.challengeTimeout = setTimeout(() => {
+            this.emit('stuck')
+            this.challengeTimeout = null
+            this.pause('stuck')
+          }, 2000)
         }
 
         this.player.nextPacket += OPUS_FRAME_DURATION
@@ -1459,30 +1772,53 @@ class Connection extends EventEmitter {
     this.player.nextPacket = now + OPUS_FRAME_DURATION
     this._packetInterval()
 
-    if (!this.audioStream.canStop)
-      this.audioStream.once('finishBuffering', () => this._markAsStoppable())
+    if (!this.audioStream.canStop) {
+      this.audioStream.once('finishBuffering', this._boundMarkAsStoppable)
+    }
   }
 
   _destroyConnection(code, reason) {
+    this._loggedTransport = false
+
     if (this.hbInterval) {
       clearInterval(this.hbInterval)
       this.hbInterval = null
     }
+
+    if (this._silenceKeepaliveTimer) {
+      clearInterval(this._silenceKeepaliveTimer)
+      this._silenceKeepaliveTimer = null
+    }
+
     if (this.playTimeout) {
       clearTimeout(this.playTimeout)
       this.playTimeout = null
     }
+
     if (this.challengeTimeout) {
       clearTimeout(this.challengeTimeout)
       this.challengeTimeout = null
     }
+
     if (this.connectTimeout) {
       clearTimeout(this.connectTimeout)
       this.connectTimeout = null
     }
+
     if (this.udpKeepAliveInterval) {
       clearInterval(this.udpKeepAliveInterval)
       this.udpKeepAliveInterval = null
+    }
+
+    if (this.audioStream) {
+      this.audioStream.removeListener(
+        'finishBuffering',
+        this._boundMarkAsStoppable
+      )
+    }
+
+    if (this._nativeQueueKey !== null && this._nativeQueueManager) {
+      this._destroyNativeQueue()
     }
 
     this.player = {
@@ -1500,6 +1836,7 @@ class Connection extends EventEmitter {
       ws.removeAllListeners()
       this.ws = null
     }
+
     if (this.udp) {
       this.udp.close()
       this.udp.removeAllListeners()
@@ -1529,6 +1866,21 @@ class Connection extends EventEmitter {
     this.pendingExternalSender = null
     this.pendingProposals = []
     this.connectedUserIds.clear()
+
+    for (const ssrc of this.ssrcs.keys()) {
+      this._unregisterSSRC(ssrc)
+    }
+    this.ssrcs.clear()
+
+    if (this._privateQueueManager && this._nativeQueueManager) {
+      if (typeof this._nativeQueueManager.close === 'function') {
+        try {
+          this._nativeQueueManager.close()
+        } catch {}
+      }
+      this._nativeQueueManager = null
+      this._privateQueueManager = false
+    }
 
     this._updateState(state)
     this._updatePlayerState({ status: 'idle', reason: 'destroyed' })
@@ -1561,13 +1913,16 @@ class Connection extends EventEmitter {
 
     this.voiceServer = { token, endpoint }
 
-    if (this.ws && (this.state.status === 'connected' || this.state.status === 'connecting')) {
+    if (
+      this.ws &&
+      (this.state.status === 'connected' || this.state.status === 'connecting')
+    ) {
       this.connect()
     }
   }
 
   getSpeakStream(ssrc) {
-    return ssrcs.get(ssrc)?.stream
+    return this.ssrcs.get(ssrc)?.stream
   }
 }
 
@@ -1575,8 +1930,10 @@ function joinVoiceChannel(obj) {
   return new Connection(obj)
 }
 
-function getSpeakStream(ssrc) {
-  return ssrcs.get(ssrc)?.stream
+function getSpeakStream(ssrc, guildId) {
+  if (!guildId) return null
+  const conn = ssrcRegistry.get(makeSsrcRegistryKey(guildId, ssrc))
+  return conn?.ssrcs?.get(ssrc)?.stream ?? null
 }
 
 export default {
