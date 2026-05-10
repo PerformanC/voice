@@ -1170,7 +1170,23 @@ class Connection extends EventEmitter {
               `Reconnect attempt ${this._reconnectCount + 1}/${this._reconnectCircuitBreakerThreshold}.`
           )
         )
+
+        const savedUdp = this.udp
+        const savedUdpKeepalive = this.udpKeepAliveInterval
+        const savedUdpInfo = this.udpInfo
         this._destroyConnection(code, reason)
+        if (savedUdp && !this.udp) {
+          this.udp = savedUdp
+          this.udpInfo = savedUdpInfo
+          if (savedUdpKeepalive) {
+            clearInterval(savedUdpKeepalive)
+            this.udpKeepAliveInterval = setInterval(() => {
+              if (!this.udp || !this.udpInfo) return
+              UDP_KEEPALIVE_BUF.writeUInt32BE(this.udpInfo.ssrc, 4)
+              this.udpSend(UDP_KEEPALIVE_BUF)
+            }, 10000)
+          }
+        }
         this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
 
         this.connect(() => {
