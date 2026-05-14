@@ -733,7 +733,14 @@ class Connection extends EventEmitter {
       }
     }
 
-    this.udp.send(data, this.udpInfo.port, this.udpInfo.ip, cb)
+    try {
+      this.udp.send(data, this.udpInfo.port, this.udpInfo.ip, cb)
+    } catch (err) {
+      if (err.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') {
+        return
+      }
+      this.emit('error', err)
+    }
   }
 
   _setSpeaking(value) {
@@ -1171,22 +1178,37 @@ class Connection extends EventEmitter {
           )
         )
 
-        const savedUdp = this.udp
-        const savedUdpKeepalive = this.udpKeepAliveInterval
-        const savedUdpInfo = this.udpInfo
-        this._destroyConnection(code, reason)
-        if (savedUdp && !this.udp) {
-          this.udp = savedUdp
-          this.udpInfo = savedUdpInfo
-          if (savedUdpKeepalive) {
-            clearInterval(savedUdpKeepalive)
-            this.udpKeepAliveInterval = setInterval(() => {
-              if (!this.udp || !this.udpInfo) return
-              UDP_KEEPALIVE_BUF.writeUInt32BE(this.udpInfo.ssrc, 4)
-              this.udpSend(UDP_KEEPALIVE_BUF)
-            }, 10000)
-          }
+        if (this.udpKeepAliveInterval) {
+          clearInterval(this.udpKeepAliveInterval)
+          this.udpKeepAliveInterval = null
         }
+
+        const savedUdp = this.udp
+        const savedUdpInfo = this.udpInfo
+        const savedNativeQueueKey = this._nativeQueueKey
+        const savedSequence = this.player.sequence
+        const savedTimestamp = this.player.timestamp
+
+        this.udp = null
+        this.udpInfo = null
+        this._nativeQueueKey = null
+
+        this._destroyConnection(code, reason)
+
+        this.udp = savedUdp
+        this.udpInfo = savedUdpInfo
+        this._nativeQueueKey = savedNativeQueueKey
+        this.player.sequence = savedSequence
+        this.player.timestamp = savedTimestamp
+
+        if (this.udp && this.udpInfo) {
+          this.udpKeepAliveInterval = setInterval(() => {
+            if (!this.udp || !this.udpInfo) return
+            UDP_KEEPALIVE_BUF.writeUInt32BE(this.udpInfo.ssrc, 4)
+            this.udpSend(UDP_KEEPALIVE_BUF)
+          }, 10000)
+        }
+
         this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
 
         this.connect(() => {
