@@ -360,7 +360,9 @@ class VoiceMLS extends EventEmitter {
       return packet
     if (this._pendingDowngrade) return packet
     if (this.protocolVersion === 0) return packet
-    if (!this.session?.ready) return null
+    // don't set this to null, when the session is not ready, return the packet instead
+    // Should fix some issues regarding the bot beign alone in the vc; since the MLS will auto set it to a fallback encryption mode
+    if (!this.session?.ready) return packet
 
     try {
       const encrypted = this.session.encryptOpus(packet)
@@ -1003,7 +1005,10 @@ class Connection extends EventEmitter {
       }
     })
 
-    this.ws.binaryType = 'arraybuffer'
+    // note: pwsl does not support binaryType as an option, since it will always deliver a Buffer no matter what.
+    // Bun uses nodebuffer. Leaving this commented out because Bun's global WS does have support for binaryType,
+    // so if a specific change is needed in the future, it's already documented here.
+    // this.ws.binaryType = 'arraybuffer'
 
     this.ws.on('open', () => {
       if (this.connectTimeout) {
@@ -1263,6 +1268,13 @@ class Connection extends EventEmitter {
           port: payload.d.port,
           secretKey: null
         }
+        // if resume fails and we get a opcode 2 instead of 9, close the previous udp socket to prevent it from leaking
+        if (this.udp) {
+          this.udp.removeAllListeners()
+          try {
+            this.udp.close()
+          } catch {}
+        }
 
         this.udp = dgram.createSocket('udp4')
 
@@ -1509,6 +1521,10 @@ class Connection extends EventEmitter {
 
         this.udpInfo.secretKey = Buffer.from(payload.d.secret_key)
 
+        // New Session Description -> new secret key
+        // so reset it to 0 to start a new fresh sequence.
+        this.nonce = 0
+
         if (!this.udpInfo.secretKey || this.udpInfo.secretKey.length === 0) {
           this.emit(
             'error',
@@ -1596,7 +1612,7 @@ class Connection extends EventEmitter {
         for (const id of ids) {
           if (String(id) !== this.userId) this.connectedUserIds.add(String(id))
         }
-        if (this.connectedUserIds.size > 0 && this.ws?.readyState === 1) {
+        if (this.connectedUserIds.size > 0 && this.ws) {
           this._stopSilenceKeepalive()
           this.emit('channelNotEmpty')
         }
@@ -1710,7 +1726,7 @@ class Connection extends EventEmitter {
     }
     this._loggedMissingSecretKey = false
 
-    if (this.mlsSession && this.connectedUserIds.size > 0) {
+    if (this.mlsSession) {
       chunk = this.mlsSession.encrypt(chunk)
       if (!chunk) return
     }
@@ -1721,9 +1737,6 @@ class Connection extends EventEmitter {
     this._sendBuffer.writeUInt32BE(this.player.timestamp, 4)
     this._sendBuffer.writeUInt32BE(udpInfo.ssrc, 8)
 
-    this.player.timestamp = (this.player.timestamp + TIMESTAMP_INCREMENT) >>> 0
-    this.player.sequence = (this.player.sequence + 1) & 0xffff
-    this.nonce = (this.nonce + 1) >>> 0
     this.nonceBuffer.writeUInt32BE(this.nonce, 0)
 
     const header = this._sendBuffer.subarray(0, 12)
@@ -1756,7 +1769,9 @@ class Connection extends EventEmitter {
 
         packet.writeUInt32BE(this.nonce, off)
 
-        return this._sendEncryptedPacket(packet)
+        this._sendEncryptedPacket(packet)
+
+        break
       }
 
       case 'aead_xchacha20_poly1305_rtpsize': {
@@ -1787,12 +1802,20 @@ class Connection extends EventEmitter {
 
         packet.writeUInt32BE(this.nonce, 12 + cipherLen)
 
-        return this._sendEncryptedPacket(packet)
+        this._sendEncryptedPacket(packet)
+
+        break
       }
 
       default:
         return
     }
+    // note: increment timestamp/nonce/sequence after sending, not before
+    // in op 4, the first packet should be nonce=0
+    // if sent before, nonce=0 is skipped and the first packet uses 1.
+    this.player.timestamp = (this.player.timestamp + TIMESTAMP_INCREMENT) >>> 0
+    this.player.sequence = (this.player.sequence + 1) & 0xffff
+    this.nonce = (this.nonce + 1) >>> 0
   }
 
   play(audioStream) {
@@ -2023,19 +2046,15 @@ class Connection extends EventEmitter {
     const ws = this.ws
     if (ws) {
       try {
-        if (ws.closing) {
-          ws.terminate()
-        } else {
-          ws.close(code, reason)
-        }
+        ws.close(code, reason)
       } catch {}
       ws.removeAllListeners()
       this.ws = null
     }
 
     if (this.udp) {
-      this.udp.close()
       this.udp.removeAllListeners()
+      this.udp.close()
       this.udp = null
     }
   }
