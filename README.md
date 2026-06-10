@@ -105,6 +105,6 @@ It is mandatory to follow the PerformanC's [contribution guidelines](https://git
 
 ## License
 
-@performanc/voice is licensed under [BSD 2-Clause License](LICENSE). You can read more about it on [Open Source Initiative](https://opensource.org/licenses/BSD-2-Clause).
+@performanc/voice is licensed under [BSD 3-Clause License](LICENSE). You can read more about it on [Open Source Initiative](https://opensource.org/licenses/BSD-3-Clause).
 
 * This project is considered as: [leading standard](https://github.com/PerformanC/contributing?tab=readme-ov-file#project-information).
