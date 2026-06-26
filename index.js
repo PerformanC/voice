@@ -503,31 +503,9 @@ class Connection extends EventEmitter {
     this._keyPackageSent = false
     this._silenceKeepaliveTimer = null
 
-    this._nativeQueueManager = obj.nativeQueueManager ?? null
-    this.useSharedQueue = obj.useSharedQueue ?? true
+    this._nativeQueueManager = obj.nativeQueueManager ?? sharedNativeQueue
     this._nativeQueueKey = null
-    this._privateQueueManager = false
-
-    if (
-      !this._nativeQueueManager &&
-      _NativeQueueManager &&
-      !this.useSharedQueue
-    ) {
-      try {
-        this._nativeQueueManager = new _NativeQueueManager(400)
-        this._privateQueueManager = true
-      } catch {
-        this._nativeQueueManager = sharedNativeQueue
-      }
-    }
-
-    if (!this._nativeQueueManager) {
-      this._nativeQueueManager = sharedNativeQueue
-    }
-
-    this._queueHasSendNow =
-      !!this._nativeQueueManager &&
-      typeof this._nativeQueueManager.sendNow === 'function'
+    this._drainInterval = null
 
     this.ssrcs = new Map()
     this._userIdToSSRCs = new Map()
@@ -819,47 +797,17 @@ class Connection extends EventEmitter {
     })
   }
 
-  _setupNativeQueue(ip, port) {
+  _setupNativeQueue() {
     if (!this._nativeQueueManager) return
+    if (typeof this._nativeQueueManager.createQueue !== 'function') return
 
-    const hasCreate = typeof this._nativeQueueManager.createQueue === 'function'
-    const hasUpdate =
-      typeof this._nativeQueueManager.updateQueueTarget === 'function'
-    const hasDelete = typeof this._nativeQueueManager.deleteQueue === 'function'
-
-    if (!hasCreate) {
-      this._nativeQueueKey = null
-      return
-    }
-
-    if (this._nativeQueueKey !== null && hasUpdate) {
-      try {
-        this._nativeQueueManager.updateQueueTarget(
-          this._nativeQueueKey,
-          ip,
-          port
-        )
-        return
-      } catch {
-        if (hasDelete) {
-          try {
-            this._nativeQueueManager.deleteQueue(this._nativeQueueKey)
-          } catch {}
-        }
-
-        this._nativeQueueKey = null
-      }
-    }
-
-    if (this._nativeQueueKey !== null && !hasUpdate && hasDelete) {
-      try {
-        this._nativeQueueManager.deleteQueue(this._nativeQueueKey)
-      } catch {}
-      this._nativeQueueKey = null
+    if (this._nativeQueueKey !== null) {
+      this._destroyNativeQueue()
     }
 
     try {
-      this._nativeQueueKey = this._nativeQueueManager.createQueue(ip, port, 400)
+      this._nativeQueueKey = this._nativeQueueManager.createQueue(400)
+      this._startDrainLoop()
     } catch {
       this._nativeQueueKey = null
     }
@@ -872,27 +820,16 @@ class Connection extends EventEmitter {
 
     const queued = this._nativeQueueManager.pushPacket(
       this._nativeQueueKey,
-      Buffer.from(packet)
+      packet
     )
 
     this.player.lastPacketTime = performance.now()
-    if (queued) {
-      this.statistics.packetsSent++
-    } else {
-      if (this._queueHasSendNow) {
-        const sent = this._nativeQueueManager.sendNow(
-          this._nativeQueueKey,
-          packet
-        )
-        if (sent) this.statistics.packetsSent++
-        else this.statistics.packetsLost++
-      } else {
-        this.statistics.packetsLost++
-      }
+    if (!queued) {
+      this.statistics.packetsLost++
+      this.statistics.packetsExpected++
     }
-    this.statistics.packetsExpected++
 
-    return true
+    return queued
   }
 
   _clearNativeQueue() {
@@ -905,6 +842,8 @@ class Connection extends EventEmitter {
   }
 
   _destroyNativeQueue() {
+    this._stopDrainLoop()
+
     if (this._nativeQueueKey === null || !this._nativeQueueManager) return
     if (typeof this._nativeQueueManager.deleteQueue !== 'function') {
       this._nativeQueueKey = null
@@ -916,6 +855,54 @@ class Connection extends EventEmitter {
     } catch {}
 
     this._nativeQueueKey = null
+  }
+
+  _startDrainLoop() {
+    if (this._drainInterval) return
+    this._drainInterval = setInterval(() => this._drainNativeQueue(), 2)
+  }
+
+  _stopDrainLoop() {
+    if (!this._drainInterval) return
+    clearInterval(this._drainInterval)
+    this._drainInterval = null
+  }
+
+  _drainNativeQueue() {
+    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
+    if (!this.udp || !this.udpInfo) return
+
+    const hasDrainQueue =
+      typeof this._nativeQueueManager.drainQueue === 'function'
+
+    if (hasDrainQueue) {
+      const nowNs = Number(process.hrtime.bigint())
+      const packet = this._nativeQueueManager.drainQueue(
+        this._nativeQueueKey,
+        nowNs
+      )
+      if (packet) {
+        this.udp.send(packet, this.udpInfo.port, this.udpInfo.ip, (err) => {
+          if (err) this.statistics.packetsLost++
+          else this.statistics.packetsSent++
+          this.statistics.packetsExpected++
+        })
+      }
+      return
+    }
+
+    if (typeof this._nativeQueueManager.drainAll === 'function') {
+      const nowNs = Number(process.hrtime.bigint())
+      const items = this._nativeQueueManager.drainAll(nowNs)
+      for (const item of items) {
+        if (item.queue_key !== this._nativeQueueKey) continue
+        this.udp.send(item.data, this.udpInfo.port, this.udpInfo.ip, (err) => {
+          if (err) this.statistics.packetsLost++
+          else this.statistics.packetsSent++
+          this.statistics.packetsExpected++
+        })
+      }
+    }
   }
 
   _startSilenceKeepalive() {
@@ -1485,7 +1472,7 @@ class Connection extends EventEmitter {
           return
         }
 
-        this._setupNativeQueue(this.udpInfo.ip, this.udpInfo.port)
+        this._setupNativeQueue()
 
         if (this.udpKeepAliveInterval) clearInterval(this.udpKeepAliveInterval)
         this.udpKeepAliveInterval = setInterval(() => {
@@ -2028,6 +2015,11 @@ class Connection extends EventEmitter {
       )
     }
 
+    if (this._drainInterval) {
+      clearInterval(this._drainInterval)
+      this._drainInterval = null
+    }
+
     if (this._nativeQueueKey !== null && this._nativeQueueManager) {
       this._destroyNativeQueue()
     }
@@ -2089,15 +2081,7 @@ class Connection extends EventEmitter {
     this.ssrcs.clear()
     this._userIdToSSRCs.clear()
 
-    if (this._privateQueueManager && this._nativeQueueManager) {
-      if (typeof this._nativeQueueManager.close === 'function') {
-        try {
-          this._nativeQueueManager.close()
-        } catch {}
-      }
-      this._nativeQueueManager = null
-      this._privateQueueManager = false
-    }
+    this._nativeQueueManager = null
 
     this._updateState(state)
     this._updatePlayerState({ status: 'idle', reason: 'destroyed' })
