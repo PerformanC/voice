@@ -3,6 +3,9 @@
 !docs
 !docs/*
 
+!native
+!native/*
+
 !.gitignore
 !.npmignore
 !index.js

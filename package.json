@@ -20,13 +20,21 @@
     "url": "https://github.com/PerformanC/voice/issues"
   },
   "homepage": "https://github.com/PerformanC/voice#readme",
+  "scripts": {
+    "install": "node-gyp rebuild --directory native",
+    "build:native": "node-gyp rebuild --directory native",
+    "test": "make -C native test",
+    "test:native": "make -C native test",
+    "test:stall": "node --no-warnings test_reproduce_stall.mjs",
+    "test:dave": "node --no-warnings test_dave_double_encrypt.mjs"
+  },
   "dependencies": {
     "@performanc/pwsl": "github:PerformanC/Internals#PWSL",
-    "@snazzah/davey": "^0.1.12"
+    "@snazzah/davey": "^0.1.12",
+    "node-gyp": "^10.0.0"
   },
   "optionalDependencies": {
     "libsodium-wrappers": "^0.8.2",
-    "sodium-native": "^5.1.0",
-    "@toddynnn/udpqueue": "^1.0.7"
+    "sodium-native": "^5.1.0"
   }
 }

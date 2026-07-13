@@ -3,31 +3,11 @@ import dgram from 'node:dgram'
 import EventEmitter from 'node:events'
 import { performance } from 'node:perf_hooks'
 import { PassThrough } from 'node:stream'
+
 import WebSocket from '@performanc/pwsl'
+
 import Sodium from './sodium.js'
-
-let _NativeQueueManager = null
-let sharedNativeQueue = null
-
-try {
-  const mod = await import('@toddynnn/udpqueue')
-  _NativeQueueManager =
-    mod?.UdpQueueManager ?? mod?.default?.UdpQueueManager ?? null
-
-  if (!_NativeQueueManager) {
-    throw new Error('UdpQueueManager export not found')
-  }
-
-  sharedNativeQueue = new _NativeQueueManager(400)
-} catch (err) {
-  _NativeQueueManager = null
-  sharedNativeQueue = null
-
-  console.log(
-    '[VoiceUDP] @toddynnn/udpqueue not available — falling back to JS setTimeout pacing'
-  )
-  console.log(`[VoiceUDP]    Reason: ${err?.message ?? err}`)
-}
+import { NativeAudioSender } from './native/index.js'
 
 let MLS = null
 try {
@@ -54,7 +34,6 @@ const OPUS_SILENCE_FRAME = Buffer.from([0xf8, 0xff, 0xfe])
 const OPUS_SILENCE_FRAME_LENGTH = 3
 
 const TIMESTAMP_INCREMENT = (OPUS_SAMPLE_RATE / 1000) * OPUS_FRAME_DURATION
-const OPUS_FRAME_SIZE = (OPUS_SAMPLE_RATE * OPUS_FRAME_DURATION) / 1000
 const _MAX_TIMESTAMP = 2 ** 32
 const _MAX_SEQUENCE = 2 ** 16
 
@@ -201,7 +180,7 @@ class VoiceMLS extends EventEmitter {
       this._pendingKeyPackage = keyPackage
 
       if (emitKeyPackage) this.emit('keyPackage', keyPackage)
-      return
+      return;
     }
 
     if (this.session) {
@@ -286,7 +265,7 @@ class VoiceMLS extends EventEmitter {
   }
 
   recoverFromInvalidTransition(transitionId) {
-    if (this.reinitializing) return
+    if (this.reinitializing) return;
 
     this.reinitializing = true
     this.consecutiveFailures = 0
@@ -465,19 +444,18 @@ class Connection extends EventEmitter {
     this.player = {
       sequence: crypto.randomInt(_MAX_SEQUENCE),
       timestamp: crypto.randomInt(_MAX_TIMESTAMP) >>> 0,
-      nextPacket: 0,
       lastPacketTime: null
     }
+
+    this._nativeSender = null
 
     this._reconnectSuccessCount = 0
     this._lastStableTime = 0
 
     this.nonce = 0
-    this.nonceBuffer = Connection._createNonceBuffer(this.encryption)
 
     this._recvNonce24 = Buffer.alloc(24)
     this._recvNonce12 = this._recvNonce24.subarray(0, 12)
-    this._sendBuffer = Buffer.allocUnsafe(1232)
 
     this._onUdpSend = (error) => {
       if (error) this.statistics.packetsLost++
@@ -485,8 +463,6 @@ class Connection extends EventEmitter {
       this.statistics.packetsExpected++
     }
 
-    this.playTimeout = null
-    this.challengeTimeout = null
     this.connectTimeout = null
     this.audioStream = null
 
@@ -502,10 +478,6 @@ class Connection extends EventEmitter {
     this._silenceKeepaliveTimer = null
     this._silenceFrameTimeout = null
 
-    this._nativeQueueManager = obj.nativeQueueManager ?? sharedNativeQueue
-    this._nativeQueueKey = null
-    this._drainInterval = null
-
     this.ssrcs = new Map()
     this._userIdToSSRCs = new Map()
 
@@ -514,17 +486,6 @@ class Connection extends EventEmitter {
     this._reconnectCircuitBreakerThreshold = 5
     this._reconnectCircuitBreakerWindowMs = 60000
     this._loggedMissingSecretKey = false
-
-    this.stuckTimeout = 2000
-
-    this._boundMarkAsStoppable = () => this._markAsStoppable()
-    this._boundPacketInterval = this._packetInterval.bind(this)
-  }
-
-  static _createNonceBuffer(encryption) {
-    return encryption === 'aead_aes256_gcm_rtpsize'
-      ? Buffer.alloc(12)
-      : Buffer.alloc(24)
   }
 
   _registerSSRC(ssrc) {
@@ -554,13 +515,13 @@ class Connection extends EventEmitter {
   }
 
   _wsSendJSON(op, d) {
-    if (!this.ws) return
+    if (!this.ws) return;
     this.ws.send(JSON.stringify({ op, d }))
   }
 
   _wsSendBinary(opcode, payload) {
     const ws = this.ws
-    if (!ws) return
+    if (!ws) return;
 
     const p = payload
       ? Buffer.isBuffer(payload)
@@ -585,9 +546,9 @@ class Connection extends EventEmitter {
   }
 
   _initMLSSessionIfNeeded(protocolVersionHint) {
-    if (!MLS) return
-    if (!this.channelId) return
-    if (this.mlsSession) return
+    if (!MLS) return;
+    if (!this.channelId) return;
+    if (this.mlsSession) return;
 
     const initialVersion =
       typeof protocolVersionHint === 'number'
@@ -639,14 +600,14 @@ class Connection extends EventEmitter {
   }
 
   _ensureKeyPackageSent() {
-    if (!MLS) return
-    if (this._keyPackageSent) return
+    if (!MLS) return;
+    if (this._keyPackageSent) return;
 
     if (!this.mlsSession) {
       this._initMLSSessionIfNeeded(this.mlsProtocolVersion)
     }
 
-    if (!this.mlsSession) return
+    if (!this.mlsSession) return;
 
     try {
       const kp =
@@ -666,9 +627,9 @@ class Connection extends EventEmitter {
   }
 
   _drainBufferedProposals() {
-    if (!this.mlsSession) return
-    if (!this.mlsSession.externalSenderSet) return
-    if (this.pendingProposals.length === 0) return
+    if (!this.mlsSession) return;
+    if (!this.mlsSession.externalSenderSet) return;
+    if (this.pendingProposals.length === 0) return;
 
     const connected = Array.from(this.connectedUserIds)
     const proposals = this.pendingProposals
@@ -704,7 +665,7 @@ class Connection extends EventEmitter {
   }
 
   udpSend(data, cb) {
-    if (!this.udp || !this.udpInfo) return
+    if (!this.udp || !this.udpInfo) return;
 
     if (!cb) {
       cb = (error) => {
@@ -716,7 +677,7 @@ class Connection extends EventEmitter {
       this.udp.send(data, this.udpInfo.port, this.udpInfo.ip, cb)
     } catch (err) {
       if (err.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') {
-        return
+        return;
       }
       this.emit('error', err)
     }
@@ -735,7 +696,7 @@ class Connection extends EventEmitter {
   }
 
   _setSpeaking(value) {
-    if (!this.ws || !this.udpInfo) return
+    if (!this.ws || !this.udpInfo) return;
     this._wsSendJSON(5, { speaking: value, delay: 0, ssrc: this.udpInfo.ssrc })
   }
 
@@ -746,7 +707,7 @@ class Connection extends EventEmitter {
 
       if (!udp || !udpInfo) {
         reject(new Error('UDP socket not ready for IP discovery'))
-        return
+        return;
       }
 
       let settled = false
@@ -763,21 +724,21 @@ class Connection extends EventEmitter {
       }
 
       const finish = (fn, value) => {
-        if (settled) return
+        if (settled) return;
         settled = true
         cleanup()
         fn(value)
       }
 
       const onMessage = (message) => {
-        if (!message || message.length < 10) return
+        if (!message || message.length < 10) return;
 
         const type = message.readUInt16BE(0)
-        if (type !== 2) return
+        if (type !== 2) return;
 
         const zeroIndex = message.indexOf(0, 8)
-        if (zeroIndex === -1) return
-        if (message.length < 2) return
+        if (zeroIndex === -1) return;
+        if (message.length < 2) return;
 
         finish(resolve, {
           ip: message.subarray(8, zeroIndex).toString('utf8'),
@@ -808,122 +769,14 @@ class Connection extends EventEmitter {
     })
   }
 
-  _setupNativeQueue() {
-    if (!this._nativeQueueManager) return
-    if (typeof this._nativeQueueManager.createQueue !== 'function') return
-
-    if (this._nativeQueueKey !== null) {
-      this._destroyNativeQueue()
-    }
-
-    try {
-      this._nativeQueueKey = this._nativeQueueManager.createQueue(400)
-      this._startDrainLoop()
-    } catch {
-      this._nativeQueueKey = null
-    }
-  }
-
-  _sendPacketViaQueue(packet) {
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) {
-      return false
-    }
-
-    const queued = this._nativeQueueManager.pushPacket(
-      this._nativeQueueKey,
-      packet
-    )
-
-    this.player.lastPacketTime = performance.now()
-    if (!queued) {
-      this.statistics.packetsLost++
-      this.statistics.packetsExpected++
-    }
-
-    return queued
-  }
-
-  _clearNativeQueue() {
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
-    if (typeof this._nativeQueueManager.clearQueue !== 'function') return
-
-    try {
-      this._nativeQueueManager.clearQueue(this._nativeQueueKey)
-    } catch {}
-  }
-
-  _destroyNativeQueue() {
-    this._stopDrainLoop()
-
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
-    if (typeof this._nativeQueueManager.deleteQueue !== 'function') {
-      this._nativeQueueKey = null
-      return
-    }
-
-    try {
-      this._nativeQueueManager.deleteQueue(this._nativeQueueKey)
-    } catch {}
-
-    this._nativeQueueKey = null
-  }
-
-  _startDrainLoop() {
-    if (this._drainInterval) return
-    this._drainInterval = setInterval(() => this._drainNativeQueue(), 2)
-  }
-
-  _stopDrainLoop() {
-    if (!this._drainInterval) return
-    clearInterval(this._drainInterval)
-    this._drainInterval = null
-  }
-
-  _drainNativeQueue() {
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
-    if (!this.udp || !this.udpInfo) return
-
-    const hasDrainQueue =
-      typeof this._nativeQueueManager.drainQueue === 'function'
-
-    if (hasDrainQueue) {
-      const nowNs = Number(process.hrtime.bigint())
-      const packet = this._nativeQueueManager.drainQueue(
-        this._nativeQueueKey,
-        nowNs
-      )
-      if (packet) {
-        this.udp.send(packet, this.udpInfo.port, this.udpInfo.ip, (err) => {
-          if (err) this.statistics.packetsLost++
-          else this.statistics.packetsSent++
-          this.statistics.packetsExpected++
-        })
-      }
-      return
-    }
-
-    if (typeof this._nativeQueueManager.drainAll === 'function') {
-      const nowNs = Number(process.hrtime.bigint())
-      const items = this._nativeQueueManager.drainAll(nowNs)
-      for (const item of items) {
-        if (item.queue_key !== this._nativeQueueKey) continue
-        this.udp.send(item.data, this.udpInfo.port, this.udpInfo.ip, (err) => {
-          if (err) this.statistics.packetsLost++
-          else this.statistics.packetsSent++
-          this.statistics.packetsExpected++
-        })
-      }
-    }
-  }
-
   _startSilenceKeepalive() {
-    if (this._silenceKeepaliveTimer) return
+    if (this._silenceKeepaliveTimer) return;
 
     // https://github.com/Snazzah/davey/blob/master/docs/USAGE.md#handling-voice-packets
     // Silence frames are already handled by the MLS session
     if (this.mlsSession && this.mlsSession.protocolVersion > 0) {
       this._setSpeaking(1 << 0)
-      return
+      return;
     }
 
     this._setSpeaking(1 << 0)
@@ -931,14 +784,14 @@ class Connection extends EventEmitter {
     this._silenceKeepaliveTimer = setInterval(() => {
       if (!this.udpInfo?.secretKey || this.connectedUserIds.size > 0) {
         this._stopSilenceKeepalive()
-        return
+        return;
       }
       this.sendAudioChunk(OPUS_SILENCE_FRAME)
     }, 5000)
   }
 
   _stopSilenceKeepalive() {
-    if (!this._silenceKeepaliveTimer) return
+    if (!this._silenceKeepaliveTimer) return;
     clearInterval(this._silenceKeepaliveTimer)
     this._silenceKeepaliveTimer = null
     this._setSpeaking(0)
@@ -983,7 +836,7 @@ class Connection extends EventEmitter {
           },
           false
         )
-        return
+        return;
       }
     }
 
@@ -1037,11 +890,11 @@ class Connection extends EventEmitter {
 
     this.ws.on('message', (data) => {
       if (typeof data === 'string') {
-        let payload
+        let payload = null
         try {
           payload = JSON.parse(data)
         } catch {
-          return
+          return;
         }
 
         if (typeof payload.seq === 'number') this.lastSequence = payload.seq
@@ -1051,7 +904,7 @@ class Connection extends EventEmitter {
       }
 
       const buf = toNodeBuffer(data)
-      if (!buf) return
+      if (!buf) return;
 
       const maybeJSON = tryParseJSONFromBuffer(buf)
       if (maybeJSON) {
@@ -1062,7 +915,7 @@ class Connection extends EventEmitter {
       }
 
       const parsed = this._parseServerBinaryMessage(buf)
-      if (!parsed) return
+      if (!parsed) return;
 
       const { opcode, payload } = parsed
 
@@ -1164,7 +1017,7 @@ class Connection extends EventEmitter {
     })
 
     this.ws.on('close', (code, reason) => {
-      if (!this.ws) return
+      if (!this.ws) return;
 
       const closeCode = DISCORD_CLOSE_CODES[code]
 
@@ -1189,19 +1042,16 @@ class Connection extends EventEmitter {
 
         const savedUdp = this.udp
         const savedUdpInfo = this.udpInfo
-        const savedNativeQueueKey = this._nativeQueueKey
         const savedSequence = this.player.sequence
         const savedTimestamp = this.player.timestamp
 
         this.udp = null
         this.udpInfo = null
-        this._nativeQueueKey = null
 
         this._destroyConnection(code, reason)
 
         this.udp = savedUdp
         this.udpInfo = savedUdpInfo
-        this._nativeQueueKey = savedNativeQueueKey
         this.player.sequence = savedSequence
         this.player.timestamp = savedTimestamp
 
@@ -1235,7 +1085,7 @@ class Connection extends EventEmitter {
   _cleanupSSRCsForUserId(userId) {
     const uid = String(userId)
     const ssrcSet = this._userIdToSSRCs.get(uid)
-    if (!ssrcSet) return
+    if (!ssrcSet) return;
 
     for (const ssrc of ssrcSet) {
       const entry = this.ssrcs.get(ssrc)
@@ -1276,17 +1126,17 @@ class Connection extends EventEmitter {
         this.udp = dgram.createSocket('udp4')
 
         this.udp.on('message', (data) => {
-          if (data.length <= 12) return
+          if (data.length <= 12) return;
 
           const rtpVersion = data[0] >> 6
-          if (rtpVersion !== 2) return
+          if (rtpVersion !== 2) return;
 
           const payloadType = data[1] & 0x7f
-          if (payloadType !== 0x78) return
+          if (payloadType !== 0x78) return;
 
           const ssrc = data.readUInt32BE(8)
           const userData = this.ssrcs.get(ssrc)
-          if (!userData || !this.udpInfo?.secretKey) return
+          if (!userData || !this.udpInfo?.secretKey) return;
 
           const hasPadding = !!(data[0] & 0b100000)
           const hasExtension = !!(data[0] & 0b10000)
@@ -1300,23 +1150,23 @@ class Connection extends EventEmitter {
           nonce.fill(0)
           data.copy(nonce, 0, data.length - 4, data.length)
 
-          let headerSize = 12 + cc * 4
+          const headerSize = 12 + cc * 4
           let extensionLengthInWords = 0
-          if (data.length < headerSize) return
+          if (data.length < headerSize) return;
 
           if (hasExtension) {
-            if (data.length < headerSize + 4) return
+            if (data.length < headerSize + 4) return;
             extensionLengthInWords = data.readUInt16BE(headerSize + 2)
             headerSize += 4
           }
 
           const header = data.subarray(0, headerSize)
 
-          let decryptedPacket
+          let decryptedPacket = null
 
           if (this.encryption === 'aead_aes256_gcm_rtpsize') {
             const trailerLength = 16 + 4
-            if (data.length < headerSize + trailerLength) return
+            if (data.length < headerSize + trailerLength) return;
 
             const encrypted = data.subarray(
               headerSize,
@@ -1345,10 +1195,10 @@ class Connection extends EventEmitter {
                 'error',
                 new Error(`Failed to decrypt AES-256-GCM packet: ${e.message}`)
               )
-              return
+              return;
             }
           } else if (this.encryption === 'aead_xchacha20_poly1305_rtpsize') {
-            if (data.length < headerSize + 4) return
+            if (data.length < headerSize + 4) return;
 
             const encrypted = data.subarray(headerSize, data.length - 4)
             try {
@@ -1366,20 +1216,20 @@ class Connection extends EventEmitter {
                   `Failed to decrypt XChaCha20-Poly1305 packet: ${e.message}`
                 )
               )
-              return
+              return;
             }
           } else {
-            return
+            return;
           }
 
-          if (!decryptedPacket || decryptedPacket.length === 0) return
+          if (!decryptedPacket || decryptedPacket.length === 0) return;
 
           if (hasPadding) {
             const paddingAmount = decryptedPacket.readUInt8(
               decryptedPacket.length - 1
             )
             if (paddingAmount > 0) {
-              if (paddingAmount >= decryptedPacket.length) return
+              if (paddingAmount >= decryptedPacket.length) return;
               decryptedPacket = decryptedPacket.subarray(
                 0,
                 decryptedPacket.length - paddingAmount
@@ -1389,7 +1239,7 @@ class Connection extends EventEmitter {
 
           const extensionDataLength = extensionLengthInWords * 4
           if (hasExtension) {
-            if (extensionDataLength > decryptedPacket.length) return
+            if (extensionDataLength > decryptedPacket.length) return;
             decryptedPacket = decryptedPacket.subarray(extensionDataLength)
           }
 
@@ -1400,12 +1250,12 @@ class Connection extends EventEmitter {
               !this.mlsSession.session?.ready &&
               this.mlsSession.protocolVersion !== 0
             ) {
-              return
+              return;
             }
 
             const decrypted = this.mlsSession.decrypt(packet, userData.userId)
             if (decrypted !== null) packet = decrypted
-            else return
+            else return;
           }
 
           if (
@@ -1415,7 +1265,7 @@ class Connection extends EventEmitter {
             packet[2] === 0xfe
           ) {
             if (userData.stream.destroyed || userData.stream.writableEnded)
-              return
+              return;
             this.emit('speakEnd', userData.userId, ssrc)
             userData.stream.end()
           } else {
@@ -1440,7 +1290,7 @@ class Connection extends EventEmitter {
         this.udp.on('error', (error) => this.emit('error', error))
 
         this.udp.on('close', () => {
-          if (!this.ws) return
+          if (!this.ws) return;
           this.emit(
             'error',
             new Error(
@@ -1450,7 +1300,7 @@ class Connection extends EventEmitter {
           this._destroy({ status: 'disconnected', reason: 'udp_closed' })
         })
 
-        let serverInfo
+        let serverInfo = null
         try {
           serverInfo = await this._ipDiscovery()
         } catch (error) {
@@ -1459,7 +1309,7 @@ class Connection extends EventEmitter {
             { status: 'disconnected', reason: 'ip_discovery_failed' },
             false
           )
-          return
+          return;
         }
 
         if (
@@ -1479,10 +1329,8 @@ class Connection extends EventEmitter {
             { status: 'disconnected', reason: 'ip_discovery_invalid' },
             false
           )
-          return
+          return;
         }
-
-        this._setupNativeQueue()
 
         if (this.udpKeepAliveInterval) clearInterval(this.udpKeepAliveInterval)
         this.udpKeepAliveInterval = setInterval(() => {
@@ -1509,14 +1357,21 @@ class Connection extends EventEmitter {
 
         if (payload.d.mode && payload.d.mode !== this.encryption) {
           this.encryption = payload.d.mode
-          this.nonceBuffer = Connection._createNonceBuffer(this.encryption)
-        }
+          }
 
         this.udpInfo.secretKey = Buffer.from(payload.d.secret_key)
 
         // New Session Description -> new secret key
         // so reset it to 0 to start a new fresh sequence.
         this.nonce = 0
+
+        // Native sender must be recreated with the new key
+        if (this._nativeSender) {
+          try {
+            this._nativeSender.destroy()
+          } catch { /* ignore */ }
+          this._nativeSender = null
+        }
 
         if (!this.udpInfo.secretKey || this.udpInfo.secretKey.length === 0) {
           this.emit(
@@ -1579,7 +1434,7 @@ class Connection extends EventEmitter {
             this.hbInterval = null
 
             if (this.ws) this.ws.close(4015, 'Heartbeat timeout')
-            return
+            return;
           }
 
           this.hbIntervalMissed++
@@ -1698,7 +1553,6 @@ class Connection extends EventEmitter {
   }
 
   _sendEncryptedPacket(packet) {
-    if (this._sendPacketViaQueue(packet)) return
     this.player.lastPacketTime = performance.now()
     this.udpSend(packet, this._onUdpSend)
   }
@@ -1715,127 +1569,84 @@ class Connection extends EventEmitter {
           )
         )
       }
-      return
+      return;
     }
     this._loggedMissingSecretKey = false
 
     if (this.mlsSession) {
       chunk = this.mlsSession.encrypt(chunk)
-      if (!chunk) return
+      if (!chunk) {
+        return;
+      }
     }
 
-    this._sendBuffer[0] = 0x80
-    this._sendBuffer[1] = 0x78
-    this._sendBuffer.writeUInt16BE(this.player.sequence, 2)
-    this._sendBuffer.writeUInt32BE(this.player.timestamp, 4)
-    this._sendBuffer.writeUInt32BE(udpInfo.ssrc, 8)
-
-    this.nonceBuffer.writeUInt32BE(this.nonce, 0)
-
-    const header = this._sendBuffer.subarray(0, 12)
-
-    switch (this.encryption) {
-      case 'aead_aes256_gcm_rtpsize': {
-        const cipher = crypto.createCipheriv(
-          'aes-256-gcm',
-          udpInfo.secretKey,
-          this.nonceBuffer
-        )
-        cipher.setAAD(header)
-
-        const ciphertext = cipher.update(chunk)
-        ciphertext.copy(this._sendBuffer, 12)
-        let off = 12 + ciphertext.length
-
-        const final = cipher.final()
-        if (final.length) {
-          final.copy(this._sendBuffer, off)
-          off += final.length
-        }
-
-        const authTag = cipher.getAuthTag()
-        authTag.copy(this._sendBuffer, off)
-        off += authTag.length
-
-        const packetSize = off + 4
-        const packet = this._sendBuffer.subarray(0, packetSize)
-
-        packet.writeUInt32BE(this.nonce, off)
-
-        this._sendEncryptedPacket(packet)
-
-        break
-      }
-
-      case 'aead_xchacha20_poly1305_rtpsize': {
-        const abytes = Sodium.ABYTES ?? 16
-        const cipherLen = chunk.length + abytes
-        const packetSize = 12 + cipherLen + 4
-        const packet = this._sendBuffer.subarray(0, packetSize)
-
-        const out = packet.subarray(12, 12 + cipherLen)
-
-        if (Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt_into) {
-          Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt_into(
-            out,
-            chunk,
-            header,
-            this.nonceBuffer,
-            udpInfo.secretKey
-          )
-        } else {
-          const encrypted = Sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
-            chunk,
-            header,
-            this.nonceBuffer,
-            udpInfo.secretKey
-          )
-          encrypted.copy(out)
-        }
-
-        packet.writeUInt32BE(this.nonce, 12 + cipherLen)
-
-        this._sendEncryptedPacket(packet)
-
-        break
-      }
-
-      default:
-        return
+    /* INFO: Lazy-initialise the native C sender */
+    if (!this._nativeSender) {
+      this._nativeSender = new NativeAudioSender(
+        this.encryption === 'aead_aes256_gcm_rtpsize'
+          ? NativeAudioSender.AES256_GCM
+          : NativeAudioSender.XCHACHA20,
+        udpInfo.secretKey,
+        udpInfo.ssrc,
+        this.player.sequence,
+        this.player.timestamp
+      )
     }
-    // note: increment timestamp/nonce/sequence after sending, not before
-    // in op 4, the first packet should be nonce=0
-    // if sent before, nonce=0 is skipped and the first packet uses 1.
-    this.player.timestamp = (this.player.timestamp + TIMESTAMP_INCREMENT) >>> 0
-    this.player.sequence = (this.player.sequence + 1) & 0xffff
-    this.nonce = (this.nonce + 1) >>> 0
+
+    /* INFO: Native encrypt */
+    {
+      const packet = this._nativeSender.encrypt(chunk)
+      if (packet) {
+        this._sendEncryptedPacket(packet)
+        this.player.sequence  = this._nativeSender.sequence
+        this.player.timestamp = this._nativeSender.timestamp
+        this.nonce            = this._nativeSender.nonce
+      }
+    }
   }
 
   play(audioStream) {
     if (!this.udpInfo) {
       this.emit('error', new Error('Cannot play audio without UDP info.'))
-      return
+      return;
     }
 
     const oldAudioStream = this.audioStream
+    const rawStream = audioStream.stream ?? audioStream
+
+    /* Native-only: use 'data' + resume (flowing mode), push to ring buffer.
+     * No JS loops. The native pthread loop encrypts and sends. */
+    rawStream.on('data', (chunk) => {
+      if (this._nativeSender) {
+        try {
+          let enc = chunk
+          if (this.mlsSession) {
+            const mlsEnc = this.mlsSession.encrypt(chunk)
+            if (mlsEnc) enc = mlsEnc
+            else return
+          }
+          const q = this._nativeSender.pushAudio(enc)
+          /* Backpressure: if queue is near-full, pause the stream
+           * to throttle the pipeline. The resume monitor will resume
+           * when the queue drains below the low-water mark (16). */
+          if (q >= 42) {
+            this._backpressurePaused = true
+            rawStream.pause()
+          }
+        } catch (e) {
+          console.error('[VOICE] data error:', e.message)
+        }
+      }
+    })
+    rawStream.on('end', () => {
+      if (this._nativeSender) {
+        this._nativeSender.signalEndOfStream()
+      }
+    })
+    rawStream.resume()
 
     audioStream.once('readable', () => {
       if (oldAudioStream) {
-        oldAudioStream.removeListener(
-          'finishBuffering',
-          this._boundMarkAsStoppable
-        )
-      }
-
-      if (oldAudioStream && this.playTimeout) {
-        clearTimeout(this.playTimeout)
-        this.playTimeout = null
-
-        if (this.challengeTimeout) {
-          clearTimeout(this.challengeTimeout)
-          this.challengeTimeout = null
-        }
-
         this.statistics = { packetsSent: 0, packetsLost: 0, packetsExpected: 0 }
       }
 
@@ -1875,23 +1686,15 @@ class Connection extends EventEmitter {
 
   stop(reason) {
     this._stopSilenceKeepalive()
-    this._clearNativeQueue()
 
-    if (this.playTimeout) {
-      clearTimeout(this.playTimeout)
-      this.playTimeout = null
-    }
-
-    if (this.challengeTimeout) {
-      clearTimeout(this.challengeTimeout)
-      this.challengeTimeout = null
+    if (this._nativeSender) {
+      try { this._nativeSender.stopLoop() } catch (e) {}
+      this.player.sequence  = this._nativeSender.sequence
+      this.player.timestamp = this._nativeSender.timestamp
+      this.nonce            = this._nativeSender.nonce
     }
 
     if (this.audioStream) {
-      this.audioStream.removeListener(
-        'finishBuffering',
-        this._boundMarkAsStoppable
-      )
       this.audioStream.destroy()
       this.audioStream.removeAllListeners()
       this.audioStream = null
@@ -1905,69 +1708,16 @@ class Connection extends EventEmitter {
   }
 
   pause(reason) {
-    this._clearNativeQueue()
-
     this._updatePlayerState({ status: 'idle', reason: reason ?? 'paused' })
 
-    if (this.playTimeout) {
-      clearTimeout(this.playTimeout)
-      this.playTimeout = null
-    }
-
-    if (this.challengeTimeout) {
-      clearTimeout(this.challengeTimeout)
-      this.challengeTimeout = null
+    if (this._nativeSender) {
+      try { this._nativeSender.stopLoop() } catch (e) {}
+      this.player.sequence  = this._nativeSender.sequence
+      this.player.timestamp = this._nativeSender.timestamp
+      this.nonce            = this._nativeSender.nonce
     }
 
     this._sendSilenceFrames()
-  }
-
-  _markAsStoppable() {
-    if (this.audioStream) this.audioStream.canStop = true
-  }
-
-  _packetInterval() {
-    this.playTimeout = null
-    if (!this.audioStream) return
-
-    const now = performance.now()
-
-    const lateness = now - this.player.nextPacket
-    if (lateness > 100) {
-      this.player.nextPacket = now
-    }
-
-    const chunk = this.audioStream.read?.(OPUS_FRAME_SIZE)
-
-    if (chunk) {
-      this._clearChallengeTimeout()
-      this.sendAudioChunk(chunk)
-    } else if (this.audioStream.canStop) {
-      this._clearChallengeTimeout()
-      return this.stop('finished')
-    } else {
-      this.sendAudioChunk(OPUS_SILENCE_FRAME)
-      if (!this.challengeTimeout) {
-        this.challengeTimeout = setTimeout(() => {
-          this.challengeTimeout = null
-          this.emit('stuck')
-          this.pause('stuck')
-        }, this.stuckTimeout ?? 2000)
-      }
-    }
-
-    this.player.nextPacket += OPUS_FRAME_DURATION
-    this.playTimeout = setTimeout(
-      this._boundPacketInterval,
-      Math.max(0, this.player.nextPacket - performance.now())
-    )
-  }
-
-  _clearChallengeTimeout() {
-    if (this.challengeTimeout) {
-      clearTimeout(this.challengeTimeout)
-      this.challengeTimeout = null
-    }
   }
 
   unpause(reason) {
@@ -1989,15 +1739,87 @@ class Connection extends EventEmitter {
       }
     }
 
-    this.player.nextPacket = now
-    this._packetInterval()
+    /* INFO: Native loop path */
+    if (this.udp && this.udpInfo && this.udp._handle) {
+      try {
+        /* Sync counters from the old sender before destroying it,
+         * then create a fresh one with the latest counters */
+        if (this._nativeSender) {
+          this.player.sequence  = this._nativeSender.sequence
+          this.player.timestamp = this._nativeSender.timestamp
+          this.nonce            = this._nativeSender.nonce
+          this._nativeSender.destroy()
+          this._nativeSender = null
+        }
 
-    if (!this.audioStream.canStop) {
-      this.audioStream.removeListener(
-        'finishBuffering',
-        this._boundMarkAsStoppable
-      )
-      this.audioStream.once('finishBuffering', this._boundMarkAsStoppable)
+        this._nativeSender = new NativeAudioSender(
+          this.encryption === 'aead_aes256_gcm_rtpsize'
+            ? NativeAudioSender.AES256_GCM
+            : NativeAudioSender.XCHACHA20,
+          this.udpInfo.secretKey,
+          this.udpInfo.ssrc,
+          this.player.sequence,
+          this.player.timestamp
+        )
+
+        this._nativeSender.resetNonce(this.nonce)
+        this._nativeSender.startLoop(
+          this.udp._handle.fd,
+          this.udpInfo.ip,
+          this.udpInfo.port
+        )
+
+        /* Register C→JS stats sync callback (replaces JS timer) */
+        if (this.audioStream) {
+          const rawStream = this.audioStream.stream ?? this.audioStream
+
+          /* Track whether WE paused the stream (for backpressure) */
+          this._backpressurePaused = false
+
+          rawStream.on('end', () => {
+            if (this._nativeSender) {
+              this._nativeSender.signalEndOfStream()
+            }
+          })
+
+          /* Register a C→JS callback that the native loop calls:
+           *   1) Every ~50 sends (≈1s) to sync statistics so the
+           *      player's position advances (prevents stuck detection)
+           *   2) When the queue drains below LOW_WATER (16) to resume
+           *      the stream after backpressure pauses it */
+          if (this._nativeSender && this._nativeSender.setStatsCallback) {
+            this._nativeSender.setStatsCallback(() => {
+              if (!this._nativeSender) return
+
+              /* Sync native → JS stats so player position advances */
+              const st = this._nativeSender.statistics
+              this.statistics.packetsSent = st.sent
+              this.statistics.packetsLost = st.lost
+              this.statistics.packetsExpected = st.expected
+              this.player.lastPacketTime = performance.now()
+
+              /* Resume stream if backpressure drained */
+              if (this._backpressurePaused && !rawStream.destroyed) {
+                const q = this._nativeSender.queueCount
+                if (q <= 16) {
+                  this._backpressurePaused = false
+                  rawStream.resume()
+                }
+              }
+            })
+          }
+        }
+
+        return;
+      } catch (e) {
+        console.error('[VOICE] unpause: native loop failed:', e)
+        /* Native loop failed - clean up and propagate */
+        if (this._nativeSender) {
+          try { this._nativeSender.destroy() } catch {}
+          this._nativeSender = null
+        }
+        throw new Error('Native audio loop failed to start: ' + e.message)
+      }
     }
   }
 
@@ -2017,16 +1839,6 @@ class Connection extends EventEmitter {
       this._silenceFrameTimeout = null
     }
 
-    if (this.playTimeout) {
-      clearTimeout(this.playTimeout)
-      this.playTimeout = null
-    }
-
-    if (this.challengeTimeout) {
-      clearTimeout(this.challengeTimeout)
-      this.challengeTimeout = null
-    }
-
     if (this.connectTimeout) {
       clearTimeout(this.connectTimeout)
       this.connectTimeout = null
@@ -2037,20 +1849,11 @@ class Connection extends EventEmitter {
       this.udpKeepAliveInterval = null
     }
 
-    if (this.audioStream) {
-      this.audioStream.removeListener(
-        'finishBuffering',
-        this._boundMarkAsStoppable
-      )
-    }
-
-    if (this._drainInterval) {
-      clearInterval(this._drainInterval)
-      this._drainInterval = null
-    }
-
-    if (this._nativeQueueKey !== null && this._nativeQueueManager) {
-      this._destroyNativeQueue()
+    if (this._nativeSender) {
+      try {
+        this._nativeSender.destroy()
+      } catch { /* ignore */ }
+      this._nativeSender = null
     }
 
     if (this.connectedUserIds) {
@@ -2060,7 +1863,6 @@ class Connection extends EventEmitter {
     this.player = {
       sequence: 0,
       timestamp: 0,
-      nextPacket: 0,
       lastPacketTime: null
     }
 
@@ -2112,8 +1914,6 @@ class Connection extends EventEmitter {
     this.ssrcs.clear()
     this._userIdToSSRCs.clear()
 
-    this._nativeQueueManager = null
-
     this._updateState(state)
     this._updatePlayerState({ status: 'idle', reason: 'destroyed' })
   }
@@ -2141,7 +1941,7 @@ class Connection extends EventEmitter {
         code: 4014,
         closeReason: 'Voice server endpoint is null'
       })
-      return
+      return;
     }
 
     if (channelId) {
@@ -2152,7 +1952,7 @@ class Connection extends EventEmitter {
       this.voiceServer?.token === token &&
       this.voiceServer?.endpoint === endpoint
     ) {
-      return
+      return;
     }
 
     this.voiceServer = { token, endpoint }
