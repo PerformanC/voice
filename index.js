@@ -60,10 +60,6 @@ const _MAX_SEQUENCE = 2 ** 16
 
 const STABLE_THRESHOLD_MS = 30000
 
-const UDP_KEEPALIVE_BUF = Buffer.alloc(74)
-UDP_KEEPALIVE_BUF.writeUInt16BE(1, 0)
-UDP_KEEPALIVE_BUF.writeUInt16BE(70, 2)
-
 const DISCORD_CLOSE_CODES = {
   1006: { reconnect: true },
   4014: {},
@@ -458,6 +454,8 @@ class Connection extends EventEmitter {
     this.hbInterval = null
     this.hbIntervalMissed = 0
     this.udpKeepAliveInterval = null
+    this._keepAliveBuffer = Buffer.alloc(8)
+    this._keepAliveCounter = 0
     this.udpInfo = null
     this.udp = null
 
@@ -502,6 +500,7 @@ class Connection extends EventEmitter {
     this.connectedUserIds = new Set()
     this._keyPackageSent = false
     this._silenceKeepaliveTimer = null
+    this._silenceFrameTimeout = null
 
     this._nativeQueueManager = obj.nativeQueueManager ?? sharedNativeQueue
     this._nativeQueueKey = null
@@ -720,6 +719,18 @@ class Connection extends EventEmitter {
         return
       }
       this.emit('error', err)
+    }
+  }
+
+  _sendUdpKeepAlive() {
+    if (!this.udp || !this.udpInfo) return
+
+    this._keepAliveBuffer.writeUInt32LE(this._keepAliveCounter, 0)
+    this.udpSend(this._keepAliveBuffer)
+
+    this._keepAliveCounter++
+    if (this._keepAliveCounter > 0xffffffff) {
+      this._keepAliveCounter = 0
     }
   }
 
@@ -1011,6 +1022,7 @@ class Connection extends EventEmitter {
           seq_ack: this.lastSequence
         })
       } else {
+        this.lastSequence = -1
         this._wsSendJSON(0, {
           server_id: this.guildId,
           user_id: this.userId,
@@ -1195,10 +1207,8 @@ class Connection extends EventEmitter {
 
         if (this.udp && this.udpInfo) {
           this.udpKeepAliveInterval = setInterval(() => {
-            if (!this.udp || !this.udpInfo) return
-            UDP_KEEPALIVE_BUF.writeUInt32BE(this.udpInfo.ssrc, 4)
-            this.udpSend(UDP_KEEPALIVE_BUF)
-          }, 10000)
+            this._sendUdpKeepAlive()
+          }, 5000)
         }
 
         this._updatePlayerState({ status: 'idle', reason: 'reconnecting' })
@@ -1476,12 +1486,8 @@ class Connection extends EventEmitter {
 
         if (this.udpKeepAliveInterval) clearInterval(this.udpKeepAliveInterval)
         this.udpKeepAliveInterval = setInterval(() => {
-          if (!this.udp || !this.udpInfo) return
-
-          UDP_KEEPALIVE_BUF.writeUInt32BE(this.udpInfo.ssrc, 4)
-
-          this.udpSend(UDP_KEEPALIVE_BUF)
-        }, 10000)
+          this._sendUdpKeepAlive()
+        }, 5000)
 
         this._wsSendJSON(1, {
           protocol: 'udp',
@@ -1840,6 +1846,33 @@ class Connection extends EventEmitter {
     return oldAudioStream
   }
 
+  _sendSilenceFrames() {
+    if (this._silenceFrameTimeout) {
+      clearTimeout(this._silenceFrameTimeout)
+      this._silenceFrameTimeout = null
+    }
+
+    let silenceCount = 0
+    const sendNextSilence = () => {
+      this._silenceFrameTimeout = null
+      if (silenceCount >= 5 || !this.udpInfo?.secretKey) {
+        this._setSpeaking(0)
+        return
+      }
+
+      this.sendAudioChunk(OPUS_SILENCE_FRAME)
+      silenceCount++
+
+      if (silenceCount < 5) {
+        this._silenceFrameTimeout = setTimeout(sendNextSilence, 20)
+      } else {
+        this._setSpeaking(0)
+      }
+    }
+
+    sendNextSilence()
+  }
+
   stop(reason) {
     this._stopSilenceKeepalive()
     this._clearNativeQueue()
@@ -1868,29 +1901,13 @@ class Connection extends EventEmitter {
 
     this.statistics = { packetsSent: 0, packetsLost: 0, packetsExpected: 0 }
 
-    let silenceCount = 0
-    const sendNextSilence = () => {
-      if (silenceCount >= 5 || !this.udpInfo?.secretKey) return
-      this.sendAudioChunk(OPUS_SILENCE_FRAME)
-      silenceCount++
-      if (silenceCount < 5) {
-        setTimeout(sendNextSilence, 20)
-      } else {
-        this._wsSendJSON(5, {
-          speaking: 0,
-          delay: 0,
-          ssrc: this.udpInfo?.ssrc ?? 0
-        })
-      }
-    }
-    sendNextSilence()
+    this._sendSilenceFrames()
   }
 
   pause(reason) {
     this._clearNativeQueue()
 
     this._updatePlayerState({ status: 'idle', reason: reason ?? 'paused' })
-    this._setSpeaking(0)
 
     if (this.playTimeout) {
       clearTimeout(this.playTimeout)
@@ -1901,6 +1918,8 @@ class Connection extends EventEmitter {
       clearTimeout(this.challengeTimeout)
       this.challengeTimeout = null
     }
+
+    this._sendSilenceFrames()
   }
 
   _markAsStoppable() {
@@ -1952,6 +1971,11 @@ class Connection extends EventEmitter {
   }
 
   unpause(reason) {
+    if (this._silenceFrameTimeout) {
+      clearTimeout(this._silenceFrameTimeout)
+      this._silenceFrameTimeout = null
+    }
+
     this._updatePlayerState({ status: 'playing', reason: reason ?? 'unpaused' })
     this._setSpeaking(1 << 0)
 
@@ -1986,6 +2010,11 @@ class Connection extends EventEmitter {
     if (this._silenceKeepaliveTimer) {
       clearInterval(this._silenceKeepaliveTimer)
       this._silenceKeepaliveTimer = null
+    }
+
+    if (this._silenceFrameTimeout) {
+      clearTimeout(this._silenceFrameTimeout)
+      this._silenceFrameTimeout = null
     }
 
     if (this.playTimeout) {
@@ -2038,7 +2067,9 @@ class Connection extends EventEmitter {
     const ws = this.ws
     if (ws) {
       try {
-        ws.close(code, reason)
+        const closeCode =
+          code === 1005 || code === 1006 || code === 1015 ? 1000 : code
+        ws.close(closeCode, reason ?? 'Closing')
       } catch {}
       ws.removeAllListeners()
       this.ws = null
