@@ -1,3 +1,12 @@
-# NPM
+*
 
-node_modules
+!docs
+!docs/*
+
+!.gitignore
+!.npmignore
+!index.js
+!LICENSE
+!package.json
+!README.md
+!sodium.js
