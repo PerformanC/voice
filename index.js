@@ -223,8 +223,16 @@ class VoiceMLS extends EventEmitter {
   setExternalSender(externalSender) {
     if (!this.session) throw new Error('No session available')
 
-    this.externalSender = Buffer.from(externalSender)
-    this.session.setExternalSender(externalSender)
+    const nextExternalSender = Buffer.from(externalSender)
+    if (
+      this.externalSenderSet &&
+      this.externalSender?.equals(nextExternalSender)
+    ) {
+      return
+    }
+
+    this.session.setExternalSender(nextExternalSender)
+    this.externalSender = nextExternalSender
     this.externalSenderSet = true
   }
 
@@ -2146,8 +2154,27 @@ class Connection extends EventEmitter {
     this._destroy({ status: 'destroyed' }, true)
   }
 
+  _updateChannelId(channelId) {
+    if (!channelId || channelId === this.channelId) return
+
+    this.channelId = channelId
+
+    if (this.mlsSession) {
+      this.mlsSession.destroy()
+      this.mlsSession.removeAllListeners()
+      this.mlsSession = null
+    }
+
+    this.pendingExternalSender = null
+    this.lastExternalSender = null
+    this.pendingProposals = []
+    this.connectedUserIds.clear()
+    this._keyPackageSent = false
+  }
+
   voiceStateUpdate(obj) {
     this.sessionId = obj.session_id ?? obj.sessionId
+    this._updateChannelId(obj.channel_id ?? obj.channelId)
   }
 
   voiceServerUpdate(obj) {
@@ -2168,9 +2195,7 @@ class Connection extends EventEmitter {
       return
     }
 
-    if (channelId) {
-      this.channelId = channelId
-    }
+    this._updateChannelId(channelId)
 
     if (
       this.voiceServer?.token === token &&
