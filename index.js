@@ -713,7 +713,7 @@ class Connection extends EventEmitter {
     }
 
     try {
-      this.udp.send(data, this.udpInfo.port, this.udpInfo.ip, cb)
+      this.udp.send(data, cb)
     } catch (err) {
       if (err.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') {
         return
@@ -893,7 +893,7 @@ class Connection extends EventEmitter {
         nowNs
       )
       if (packet) {
-        this.udp.send(packet, this.udpInfo.port, this.udpInfo.ip, (err) => {
+        this.udp.send(packet, (err) => {
           if (err) this.statistics.packetsLost++
           else this.statistics.packetsSent++
           this.statistics.packetsExpected++
@@ -907,7 +907,7 @@ class Connection extends EventEmitter {
       const items = this._nativeQueueManager.drainAll(nowNs)
       for (const item of items) {
         if (item.queue_key !== this._nativeQueueKey) continue
-        this.udp.send(item.data, this.udpInfo.port, this.udpInfo.ip, (err) => {
+        this.udp.send(item.data, (err) => {
           if (err) this.statistics.packetsLost++
           else this.statistics.packetsSent++
           this.statistics.packetsExpected++
@@ -1477,6 +1477,30 @@ class Connection extends EventEmitter {
           )
           this._destroy(
             { status: 'disconnected', reason: 'ip_discovery_invalid' },
+            false
+          )
+          return
+        }
+
+        try {
+          await new Promise((resolve, reject) => {
+            const udp = this.udp
+            const udpInfo = this.udpInfo
+
+            if (!udp || !udpInfo) {
+              reject(new Error('UDP socket not ready to connect'))
+              return
+            }
+
+            udp.connect(udpInfo.port, udpInfo.ip, (error) => {
+              if (error) reject(error)
+              else resolve()
+            })
+          })
+        } catch (error) {
+          this.emit('error', new Error(`UDP connect failed: ${error.message}`))
+          this._destroy(
+            { status: 'disconnected', reason: 'udp_connect_failed' },
             false
           )
           return
