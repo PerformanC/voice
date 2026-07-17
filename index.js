@@ -6,29 +6,6 @@ import { PassThrough } from 'node:stream'
 import WebSocket from '@performanc/pwsl'
 import Sodium from './sodium.js'
 
-let _NativeQueueManager = null
-let sharedNativeQueue = null
-
-try {
-  const mod = await import('@toddynnn/udpqueue')
-  _NativeQueueManager =
-    mod?.UdpQueueManager ?? mod?.default?.UdpQueueManager ?? null
-
-  if (!_NativeQueueManager) {
-    throw new Error('UdpQueueManager export not found')
-  }
-
-  sharedNativeQueue = new _NativeQueueManager(400)
-} catch (err) {
-  _NativeQueueManager = null
-  sharedNativeQueue = null
-
-  console.log(
-    '[VoiceUDP] @toddynnn/udpqueue not available — falling back to JS setTimeout pacing'
-  )
-  console.log(`[VoiceUDP]    Reason: ${err?.message ?? err}`)
-}
-
 let MLS = null
 try {
   const lib = await import('@snazzah/davey')
@@ -510,10 +487,6 @@ class Connection extends EventEmitter {
     this._silenceKeepaliveTimer = null
     this._silenceFrameTimeout = null
 
-    this._nativeQueueManager = obj.nativeQueueManager ?? sharedNativeQueue
-    this._nativeQueueKey = null
-    this._drainInterval = null
-
     this.ssrcs = new Map()
     this._userIdToSSRCs = new Map()
 
@@ -816,114 +789,6 @@ class Connection extends EventEmitter {
     })
   }
 
-  _setupNativeQueue() {
-    if (!this._nativeQueueManager) return
-    if (typeof this._nativeQueueManager.createQueue !== 'function') return
-
-    if (this._nativeQueueKey !== null) {
-      this._destroyNativeQueue()
-    }
-
-    try {
-      this._nativeQueueKey = this._nativeQueueManager.createQueue(400)
-      this._startDrainLoop()
-    } catch {
-      this._nativeQueueKey = null
-    }
-  }
-
-  _sendPacketViaQueue(packet) {
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) {
-      return false
-    }
-
-    const queued = this._nativeQueueManager.pushPacket(
-      this._nativeQueueKey,
-      packet
-    )
-
-    this.player.lastPacketTime = performance.now()
-    if (!queued) {
-      this.statistics.packetsLost++
-      this.statistics.packetsExpected++
-    }
-
-    return queued
-  }
-
-  _clearNativeQueue() {
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
-    if (typeof this._nativeQueueManager.clearQueue !== 'function') return
-
-    try {
-      this._nativeQueueManager.clearQueue(this._nativeQueueKey)
-    } catch {}
-  }
-
-  _destroyNativeQueue() {
-    this._stopDrainLoop()
-
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
-    if (typeof this._nativeQueueManager.deleteQueue !== 'function') {
-      this._nativeQueueKey = null
-      return
-    }
-
-    try {
-      this._nativeQueueManager.deleteQueue(this._nativeQueueKey)
-    } catch {}
-
-    this._nativeQueueKey = null
-  }
-
-  _startDrainLoop() {
-    if (this._drainInterval) return
-    this._drainInterval = setInterval(() => this._drainNativeQueue(), 2)
-  }
-
-  _stopDrainLoop() {
-    if (!this._drainInterval) return
-    clearInterval(this._drainInterval)
-    this._drainInterval = null
-  }
-
-  _drainNativeQueue() {
-    if (this._nativeQueueKey === null || !this._nativeQueueManager) return
-    if (!this.udp || !this.udpInfo) return
-
-    const hasDrainQueue =
-      typeof this._nativeQueueManager.drainQueue === 'function'
-
-    if (hasDrainQueue) {
-      const nowNs = Number(process.hrtime.bigint())
-      const packet = this._nativeQueueManager.drainQueue(
-        this._nativeQueueKey,
-        nowNs
-      )
-      if (packet) {
-        this.udp.send(packet, (err) => {
-          if (err) this.statistics.packetsLost++
-          else this.statistics.packetsSent++
-          this.statistics.packetsExpected++
-        })
-      }
-      return
-    }
-
-    if (typeof this._nativeQueueManager.drainAll === 'function') {
-      const nowNs = Number(process.hrtime.bigint())
-      const items = this._nativeQueueManager.drainAll(nowNs)
-      for (const item of items) {
-        if (item.queue_key !== this._nativeQueueKey) continue
-        this.udp.send(item.data, (err) => {
-          if (err) this.statistics.packetsLost++
-          else this.statistics.packetsSent++
-          this.statistics.packetsExpected++
-        })
-      }
-    }
-  }
-
   _startSilenceKeepalive() {
     if (this._silenceKeepaliveTimer) return
 
@@ -1197,19 +1062,16 @@ class Connection extends EventEmitter {
 
         const savedUdp = this.udp
         const savedUdpInfo = this.udpInfo
-        const savedNativeQueueKey = this._nativeQueueKey
         const savedSequence = this.player.sequence
         const savedTimestamp = this.player.timestamp
 
         this.udp = null
         this.udpInfo = null
-        this._nativeQueueKey = null
 
         this._destroyConnection(code, reason)
 
         this.udp = savedUdp
         this.udpInfo = savedUdpInfo
-        this._nativeQueueKey = savedNativeQueueKey
         this.player.sequence = savedSequence
         this.player.timestamp = savedTimestamp
 
@@ -1514,8 +1376,6 @@ class Connection extends EventEmitter {
           return
         }
 
-        this._setupNativeQueue()
-
         if (this.udpKeepAliveInterval) clearInterval(this.udpKeepAliveInterval)
         this.udpKeepAliveInterval = setInterval(() => {
           this._sendUdpKeepAlive()
@@ -1730,7 +1590,6 @@ class Connection extends EventEmitter {
   }
 
   _sendEncryptedPacket(packet) {
-    if (this._sendPacketViaQueue(packet)) return
     this.player.lastPacketTime = performance.now()
     this.udpSend(packet, this._onUdpSend)
   }
@@ -1907,7 +1766,6 @@ class Connection extends EventEmitter {
 
   stop(reason) {
     this._stopSilenceKeepalive()
-    this._clearNativeQueue()
 
     if (this.playTimeout) {
       clearTimeout(this.playTimeout)
@@ -1937,8 +1795,6 @@ class Connection extends EventEmitter {
   }
 
   pause(reason) {
-    this._clearNativeQueue()
-
     this._updatePlayerState({ status: 'idle', reason: reason ?? 'paused' })
 
     if (this.playTimeout) {
@@ -2076,15 +1932,6 @@ class Connection extends EventEmitter {
       )
     }
 
-    if (this._drainInterval) {
-      clearInterval(this._drainInterval)
-      this._drainInterval = null
-    }
-
-    if (this._nativeQueueKey !== null && this._nativeQueueManager) {
-      this._destroyNativeQueue()
-    }
-
     if (this.connectedUserIds) {
       this.connectedUserIds.clear()
     }
@@ -2143,8 +1990,6 @@ class Connection extends EventEmitter {
     }
     this.ssrcs.clear()
     this._userIdToSSRCs.clear()
-
-    this._nativeQueueManager = null
 
     this._updateState(state)
     this._updatePlayerState({ status: 'idle', reason: 'destroyed' })
