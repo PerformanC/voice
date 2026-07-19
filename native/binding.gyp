@@ -15,17 +15,31 @@
       ],
       "conditions": [
         ["OS=='linux'", {
-          "cflags": [ "-std=c99", "-Wall", "-Wextra" ],
+          "cflags": [
+            "-std=c99",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic"
+          ],
           "ldflags": []
         }],
         ["OS=='mac'", {
           "xcode_settings": {
-            "OTHER_CFLAGS": [ "-std=c99", "-Wall", "-Wextra" ]
+            "OTHER_CFLAGS": [
+              "-std=c99",
+              "-Wall",
+              "-Wextra",
+              "-Wpedantic",
+            ]
           }
         }],
         ["OS=='win'", {
-          "libraries": [ "-lsodium.lib" ],
-          "include_dirs": [ "src" ]
+          "libraries": [
+            "-lsodium.lib"
+          ],
+          "include_dirs": [
+            "src"
+          ]
         }]
       ]
     }
