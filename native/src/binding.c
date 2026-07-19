@@ -60,7 +60,7 @@ static void *loop_thread_func(void *arg) {
       long long remaining = next_send - os_now_ns();
       if (remaining <= 0) break; /* time to send (silence or late) */
 
-      int wait_ms = (int)(remaining / 1000000LL);
+      unsigned int wait_ms = (unsigned int)(remaining / 1000000LL);
       if (wait_ms < 1) wait_ms = 1;
 
       /* If next_send is more than one frame ahead, the audio send burst
@@ -602,20 +602,20 @@ static napi_value init_module(napi_env env, napi_value exports) {
   napi_status status;
   napi_value fn;
 
-  EXPORT("createContext",    create_context);
-  EXPORT("encrypt",          encrypt);
-  EXPORT("destroyContext",   destroy_context);
-  EXPORT("getSequence",      get_sequence);
-  EXPORT("getTimestamp",     get_timestamp);
-  EXPORT("getNonce",         get_nonce);
-  EXPORT("resetNonce",       reset_nonce);
-  EXPORT("startSendLoop",    start_send_loop);
-  EXPORT("pushAudio",        push_audio);
-  EXPORT("stopSendLoop",     stop_send_loop);
-  EXPORT("getQueueCount",    get_queue_count);
-  EXPORT("getQueueDropped",  get_queue_dropped);
-  EXPORT("getStatistics",    get_statistics);
-  EXPORT("setStatsCallback", set_stats_callback);
+  EXPORT("createContext",    create_context)
+  EXPORT("encrypt",          encrypt)
+  EXPORT("destroyContext",   destroy_context)
+  EXPORT("getSequence",      get_sequence)
+  EXPORT("getTimestamp",     get_timestamp)
+  EXPORT("getNonce",         get_nonce)
+  EXPORT("resetNonce",       reset_nonce)
+  EXPORT("startSendLoop",    start_send_loop)
+  EXPORT("pushAudio",        push_audio)
+  EXPORT("stopSendLoop",     stop_send_loop)
+  EXPORT("getQueueCount",    get_queue_count)
+  EXPORT("getQueueDropped",  get_queue_dropped)
+  EXPORT("getStatistics",    get_statistics)
+  EXPORT("setStatsCallback", set_stats_callback)
 
   napi_value mode;
   napi_create_object(env, &mode);

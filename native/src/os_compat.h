@@ -62,24 +62,4 @@ static inline long long os_now_ns(void) {
   #endif
 }
 
-static inline void os_sleep_ns(long long ns) {
-  #ifdef _WIN32
-    if (ns > 0) {
-      DWORD ms = (DWORD)(ns / 1000000LL);
-      if (ms == 0) ms = 1;
-
-      Sleep(ms);
-    }
-  #else
-    if (ns > 0) {
-      struct timespec ts = {
-        .tv_sec = (time_t)(ns / 1000000000LL),
-        .tv_nsec = (long)(ns % 1000000000LL)
-      };
-
-      nanosleep(&ts, NULL);
-    }
-  #endif
-}
-
 #endif /* OS_COMPAT_H */
