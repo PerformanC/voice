@@ -1,24 +1,15 @@
-#define _POSIX_C_SOURCE 199309L
+#include "voice_send.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <time.h>
-
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
 #include <sodium.h>
-
-#include "voice_send.h"
 
 #if defined(__GNUC__) || defined(__clang__)
   __attribute__((constructor))
 #elif defined(_MSC_VER)
   #pragma section(".CRT$XCU", long, read)
 #endif
-static void _sodium_init(void) {
+static void auto_sodium_init(void) {
   if (sodium_init() < 0) {
     fprintf(stderr, "ERROR: libsodium initialization failed\n");
     abort();
@@ -26,7 +17,7 @@ static void _sodium_init(void) {
 }
 
 #ifdef _MSC_VER
-  __declspec(allocate(".CRT$XCU")) static void (*_sodium_init_ptr)(void) = _sodium_init;
+  __declspec(allocate(".CRT$XCU")) static void (*auto_sodium_init_ptr)(void) = auto_sodium_init;
 #endif
 
 const uint8_t OPUS_SILENCE_FRAME[] = {

@@ -10,15 +10,10 @@
   #include <mswsock.h>
 
 #else
-  #include <sys/socket.h>
   #include <time.h>
 
-  #include <netinet/in.h>
   #include <arpa/inet.h>
 #endif
-
-#include <stdint.h>
-#include <stddef.h>
 
 #ifdef _WIN32
   typedef SOCKET os_socket_t;
