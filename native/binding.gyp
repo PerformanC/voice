@@ -4,14 +4,11 @@
       "target_name": "voice_send_native",
       "sources": [
         "src/binding.c",
+        "src/cthreads.c",
         "src/voice_send.c"
       ],
       "include_dirs": [
         "."
-      ],
-      "libraries": [
-        "-lsodium",
-        "-lpthread"
       ],
       "conditions": [
         ["OS=='linux'", {
@@ -21,9 +18,16 @@
             "-Wextra",
             "-Wpedantic"
           ],
-          "ldflags": []
+          "libraries": [
+            "-lsodium",
+            "-lpthread"
+          ]
         }],
         ["OS=='mac'", {
+          "libraries": [
+            "-lsodium",
+            "-lpthread"
+          ],
           "xcode_settings": {
             "OTHER_CFLAGS": [
               "-std=c99",
@@ -34,11 +38,37 @@
           }
         }],
         ["OS=='win'", {
+          "defines": [
+            "SODIUM_STATIC"
+          ],
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "AdditionalOptions!": [
+                "-flto=full",
+                "-flto=thin"
+              ]
+            },
+            "VCLibrarianTool": {
+              "AdditionalOptions!": [
+                "-flto=full",
+                "-flto=thin"
+              ]
+            },
+            "VCLinkerTool": {
+              "AdditionalOptions!": [
+                "-flto=full",
+                "-flto=thin",
+                "/opt:lldltojobs=<(lto_jobs)"
+              ]
+            }
+          },
           "libraries": [
-            "-lsodium.lib"
+            "<!(node find-libsodium.js library <(target_arch))",
+            "ws2_32.lib"
           ],
           "include_dirs": [
-            "src"
+            "src",
+            "<!(node find-libsodium.js include <(target_arch))"
           ]
         }]
       ]

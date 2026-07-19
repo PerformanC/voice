@@ -113,7 +113,7 @@ static void *loop_thread_func(void *arg) {
     /* INFO: Send via UDP */
     if (pkt_len > 0) {
       int sent = os_sendto(nc->udp_fd, packet, (size_t)pkt_len, 0, (const struct sockaddr *)&nc->udp_addr, sizeof(nc->udp_addr));
-      if (sent == (ssize_t)pkt_len) {
+      if (sent == pkt_len) {
         nc->ctx.stats.packets_sent++;
 
         /* INFO: Update the stats counter and sync to JS every 50 packets */

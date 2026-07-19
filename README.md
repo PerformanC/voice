@@ -26,6 +26,26 @@ $ npm install @performanc/voice
 $ npm install github:PerformanC/voice
 ```
 
+### Native build requirements
+
+Installation builds the native audio sender and requires Python, a C compiler,
+and the libsodium development files.
+
+On Windows, use the official Visual Studio libsodium package and set
+`SODIUM_ROOT` to its extracted directory:
+
+```powershell
+$env:SODIUM_ROOT = 'C:\path\to\libsodium'
+npm install
+```
+
+The build also detects a static libsodium installation under `VCPKG_ROOT`.
+Custom layouts can set `SODIUM_INCLUDE_DIR` to the directory containing
+`sodium.h` and `SODIUM_LIB` to the full path of the static `.lib` file.
+
+Linux and macOS builds use the system libsodium development package, such as
+`libsodium-dev` on Debian/Ubuntu or `brew install libsodium` on macOS.
+
 ## Usage
 
 ```javascript

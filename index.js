@@ -1150,7 +1150,7 @@ class Connection extends EventEmitter {
           nonce.fill(0)
           data.copy(nonce, 0, data.length - 4, data.length)
 
-          const headerSize = 12 + cc * 4
+          let headerSize = 12 + cc * 4
           let extensionLengthInWords = 0
           if (data.length < headerSize) return;
 
