@@ -23,10 +23,7 @@
   "scripts": {
     "install": "node-gyp rebuild --directory native",
     "build:native": "node-gyp rebuild --directory native",
-    "test": "make -C native test",
-    "test:native": "make -C native test",
-    "test:stall": "node --no-warnings test_reproduce_stall.mjs",
-    "test:dave": "node --no-warnings test_dave_double_encrypt.mjs"
+    "test": "make -C native test"
   },
   "dependencies": {
     "@performanc/pwsl": "github:PerformanC/Internals#PWSL",
