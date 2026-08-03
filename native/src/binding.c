@@ -173,6 +173,8 @@ static void *loop_thread_func(void *arg) {
   return NULL;
 }
 
+static void destroy_loop_fields(struct native_ctx *nc);
+
 static void try_final_cleanup(struct native_ctx *nc) {
   if (nc->final_cleanup_done) return;
   if (nc->pending_sends > 0) return;
