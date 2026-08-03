@@ -1,5 +1,6 @@
 #include <string.h>
 
+#include <uv.h>
 #include <node_api.h>
 #include <sodium.h>
 
@@ -22,6 +23,21 @@ struct audio_queue {
   unsigned dropped;
 };
 
+#define SEND_QUEUE_SIZE 256
+
+struct send_queue {
+  uint8_t *data[SEND_QUEUE_SIZE];
+  size_t  len[SEND_QUEUE_SIZE];
+  unsigned head;
+  unsigned tail;
+  unsigned count;
+};
+
+struct send_req_data {
+  struct native_ctx *nc;
+  uint8_t *buf;
+};
+
 struct native_ctx {
   struct voice_send_ctx ctx;
 
@@ -33,13 +49,21 @@ struct native_ctx {
   struct cthreads_thread loop_thread;
   volatile int loop_running;
   volatile int loop_eos; /* INFO: Enf-Of-Stream flag */
-  os_socket_t udp_fd;
+  uv_udp_t *udp_handle;
   struct sockaddr_in udp_addr;
+
+  uv_loop_t *loop;
+  uv_async_t async_handle;
+  int async_initialized;
+
+  struct send_queue send_q;
+
+  int pending_sends;
+  int final_cleanup_done;
 
   napi_threadsafe_function stats_tsfn;
   int stats_counter;
 };
-
 
 /* INFO: Thread: audio send loop */
 static void *loop_thread_func(void *arg) {
@@ -112,16 +136,27 @@ static void *loop_thread_func(void *arg) {
 
     /* INFO: Send via UDP */
     if (pkt_len > 0) {
-      int sent = os_sendto(nc->udp_fd, packet, (size_t)pkt_len, 0, (const struct sockaddr *)&nc->udp_addr, sizeof(nc->udp_addr));
-      if (sent == (ssize_t)pkt_len) {
-        nc->ctx.stats.packets_sent++;
+      uint8_t *buf = (uint8_t *)malloc((size_t)pkt_len);
+      if (buf != NULL) {
+        memcpy(buf, packet, (size_t)pkt_len);
 
-        /* INFO: Update the stats counter and sync to JS every 50 packets */
-        nc->stats_counter++;
-        if (nc->stats_tsfn != NULL && nc->stats_counter >= 50) {
-          nc->stats_counter = 0;
-          napi_call_threadsafe_function(nc->stats_tsfn, NULL, napi_tsfn_nonblocking);
+        cthreads_mutex_lock(&nc->audio_mutex);
+        if (nc->send_q.count < SEND_QUEUE_SIZE) {
+          nc->send_q.data[nc->send_q.tail] = buf;
+          nc->send_q.len[nc->send_q.tail] = (size_t)pkt_len;
+          nc->send_q.tail = (nc->send_q.tail + 1) % SEND_QUEUE_SIZE;
+          nc->send_q.count++;
+        } else {
+          free(nc->send_q.data[nc->send_q.head]);
+          nc->send_q.data[nc->send_q.head] = buf;
+          nc->send_q.len[nc->send_q.head] = (size_t)pkt_len;
+          nc->send_q.head = (nc->send_q.head + 1) % SEND_QUEUE_SIZE;
+          nc->send_q.tail = (nc->send_q.head + nc->send_q.count) % SEND_QUEUE_SIZE;
         }
+        cthreads_mutex_unlock(&nc->audio_mutex);
+
+        if (nc->async_initialized)
+          uv_async_send(&nc->async_handle);
       } else {
         nc->ctx.stats.packets_lost++;
       }
@@ -136,6 +171,105 @@ static void *loop_thread_func(void *arg) {
   nc->loop_running = 0;
 
   return NULL;
+}
+
+static void try_final_cleanup(struct native_ctx *nc) {
+  if (nc->final_cleanup_done) return;
+  if (nc->pending_sends > 0) return;
+
+  nc->final_cleanup_done = 1;
+  destroy_loop_fields(nc);
+  voice_send_destroy(&nc->ctx);
+  free(nc);
+}
+
+static void on_udp_send(uv_udp_send_t *req, int status) {
+  struct send_req_data *d = (struct send_req_data *)req->data;
+
+  if (d != NULL) {
+    struct native_ctx *nc = d->nc;
+
+    if (status == 0) {
+      nc->ctx.stats.packets_sent++;
+      nc->stats_counter++;
+      if (nc->stats_tsfn != NULL && nc->stats_counter >= 50) {
+        nc->stats_counter = 0;
+        napi_call_threadsafe_function(nc->stats_tsfn, NULL, napi_tsfn_nonblocking);
+      }
+    } else {
+      nc->ctx.stats.packets_lost++;
+    }
+
+    free(d->buf);
+    free(d);
+
+    nc->pending_sends--;
+    try_final_cleanup(nc);
+  }
+
+  free(req);
+}
+
+static void async_send_cb(uv_async_t *handle) {
+  struct native_ctx *nc = (struct native_ctx *)handle->data;
+  if (nc == NULL || nc->udp_handle == NULL) return;
+
+  while (1) {
+    uint8_t *buf = NULL;
+    size_t len = 0;
+
+    cthreads_mutex_lock(&nc->audio_mutex);
+    if (nc->send_q.count > 0) {
+      buf = nc->send_q.data[nc->send_q.head];
+      len = nc->send_q.len[nc->send_q.head];
+      nc->send_q.head = (nc->send_q.head + 1) % SEND_QUEUE_SIZE;
+      nc->send_q.count--;
+    }
+    cthreads_mutex_unlock(&nc->audio_mutex);
+
+    if (buf == NULL) break;
+
+    uv_udp_send_t *req = (uv_udp_send_t *)malloc(sizeof(uv_udp_send_t));
+    if (req == NULL) {
+      /* TODO: pass env to use napi throw error...? */
+      fprintf(stderr, "Failed to allocate uv_udp_send_t\n");
+
+      free(buf);
+
+      nc->ctx.stats.packets_lost++;
+
+      continue;
+    }
+
+    struct send_req_data *data = (struct send_req_data *)malloc(sizeof(struct send_req_data));
+    if (data == NULL) {
+      /* TODO: pass env to use napi throw error...? */
+      fprintf(stderr, "Failed to allocate send_req_data\n");
+
+      free(buf);
+      free(req);
+
+      nc->ctx.stats.packets_lost++;
+
+      continue;
+    }
+
+    data->nc  = nc;
+    data->buf = buf;
+    req->data = data;
+
+    /* TODO: Change length from queue to unsigned int to match? */
+    uv_buf_t uv_buf = uv_buf_init((char *)buf, (unsigned int)len);
+    nc->pending_sends++;
+    if (uv_udp_send(req, nc->udp_handle, &uv_buf, 1, (const struct sockaddr *)&nc->udp_addr, on_udp_send) != 0) {
+      free(data->buf);
+      free(data);
+      free(req);
+
+      nc->pending_sends--;
+      nc->ctx.stats.packets_lost++;
+    }
+  }
 }
 
 static int init_loop_fields(struct native_ctx *nc) {
@@ -168,6 +302,30 @@ static void stop_loop_and_join(struct native_ctx *nc) {
   cthreads_thread_join(nc->loop_thread, NULL);
 }
 
+static void close_async_and_finish(struct native_ctx *nc) {
+  if (nc->stats_tsfn != NULL) {
+    napi_release_threadsafe_function(nc->stats_tsfn, napi_tsfn_abort);
+    nc->stats_tsfn = NULL;
+  }
+
+  cthreads_mutex_lock(&nc->audio_mutex);
+  while (nc->send_q.count > 0) {
+    free(nc->send_q.data[nc->send_q.head]);
+    nc->send_q.head = (nc->send_q.head + 1) % SEND_QUEUE_SIZE;
+    nc->send_q.count--;
+  }
+  cthreads_mutex_unlock(&nc->audio_mutex);
+
+  if (nc->async_initialized) {
+    nc->async_handle.data = nc;
+    uv_close((uv_handle_t *)&nc->async_handle, (uv_close_cb)try_final_cleanup);
+  } else {
+    destroy_loop_fields(nc);
+    voice_send_destroy(&nc->ctx);
+    free(nc);
+  }
+}
+
 /* INFO: Finalizer called when the JS wrapper is GC'd */
 static void finalize_native_ctx(napi_env env, void *data, void *hint) {
   (void)env; (void)hint;
@@ -176,15 +334,7 @@ static void finalize_native_ctx(napi_env env, void *data, void *hint) {
 
   if (nc != NULL) {
     stop_loop_and_join(nc);
-
-    if (nc->stats_tsfn != NULL) {
-      napi_release_threadsafe_function(nc->stats_tsfn, napi_tsfn_abort);
-      nc->stats_tsfn = NULL;
-    }
-
-    destroy_loop_fields(nc);
-    voice_send_destroy(&nc->ctx);
-    free(nc);
+    close_async_and_finish(nc);
   }
 }
 
@@ -263,7 +413,7 @@ static napi_value create_context(napi_env env, napi_callback_info info) {
     return NULL;
 }
 
-/* INFO: startSendLoop(ctx, fd, ip, port) */
+/* INFO: startSendLoop(ctx, udpSocket, ip, port) */
 static napi_value start_send_loop(napi_env env, napi_callback_info info) {
   NAPI_INIT_FN_INFO(4)
 
@@ -273,8 +423,29 @@ static napi_value start_send_loop(napi_env env, napi_callback_info info) {
     return NULL;
   }
 
-  int32_t fd;
-  NAPI_GET_VALUE_EXTRA(fd, 1, int32, fd >= 0, "a valid file descriptor")
+  napi_value handle_val;
+  status = napi_get_named_property(env, args[1], "_handle", &handle_val);
+  if (status != napi_ok) {
+    napi_throw_type_error(env, NULL, "First argument must be a dgram.Socket with a _handle");
+
+    return NULL;
+  }
+
+  napi_value external_val;
+  status = napi_get_named_property(env, handle_val, "_external", &external_val);
+  if (status != napi_ok) {
+    napi_throw_type_error(env, NULL, "_handle is missing _external");
+
+    return NULL;
+  }
+
+  uv_udp_t *udp_handle;
+  status = napi_get_value_external(env, external_val, (void **)&udp_handle);
+  if (status != napi_ok || udp_handle == NULL) {
+    napi_throw_type_error(env, NULL, "Failed to extract uv_udp_t pointer from _external");
+
+    return NULL;
+  }
 
   char ip_str[64];
   size_t ip_len;
@@ -288,7 +459,7 @@ static napi_value start_send_loop(napi_env env, napi_callback_info info) {
   int32_t port;
   NAPI_GET_VALUE_EXTRA(port, 3, int32, port > 0 && port <= 65535, "a valid port number")
 
-  nc->udp_fd = (os_socket_t)fd;
+  nc->udp_handle = udp_handle;
   memset(&nc->udp_addr, 0, sizeof(nc->udp_addr));
   nc->udp_addr.sin_family = AF_INET;
   nc->udp_addr.sin_port = htons((uint16_t)port);
@@ -296,6 +467,17 @@ static napi_value start_send_loop(napi_env env, napi_callback_info info) {
     napi_throw_type_error(env, NULL, "Invalid IP address");
 
     return NULL;
+  }
+
+  if (!nc->async_initialized) {
+    nc->loop = uv_default_loop();
+    nc->async_handle.data = nc;
+    if (uv_async_init(nc->loop, &nc->async_handle, async_send_cb) != 0) {
+      napi_throw_error(env, NULL, "uv_async_init failed");
+
+      return NULL;
+    }
+    nc->async_initialized = 1;
   }
 
   nc->loop_running = 1;
@@ -347,14 +529,14 @@ static napi_value push_audio(napi_env env, napi_callback_info info) {
   }
 
   /* INFO: Ring buffer push with backpressure hint
-   
+
            Non-blocking push. Returns the count of items remaining in the
              queue AFTER the push. This tells JS whether to pause the stream:
              if count >= HIGH_WATER (42/48), the JS 'data' handler should
              call rawStream.pause() to create backpressure through the pipeline.
              When the loop drains below LOW_WATER (16/48), the JS 'data' handler
              should call rawStream.resume().
-   
+
            This avoids blocking the event loop entirely while still providing
              natural backpressure.
   */
@@ -392,6 +574,14 @@ static napi_value stop_send_loop(napi_env env, napi_callback_info info) {
   NAPI_INIT_FN_INFO(1)
 
   stop_loop_and_join(nc);
+
+  cthreads_mutex_lock(&nc->audio_mutex);
+  while (nc->send_q.count > 0) {
+    free(nc->send_q.data[nc->send_q.head]);
+    nc->send_q.head = (nc->send_q.head + 1) % SEND_QUEUE_SIZE;
+    nc->send_q.count--;
+  }
+  cthreads_mutex_unlock(&nc->audio_mutex);
 
   napi_get_undefined(env, &args[0]);
 
@@ -488,9 +678,7 @@ static napi_value destroy_context(napi_env env, napi_callback_info info) {
 
   status = napi_remove_wrap(env, args[0], (void **)&nc);
   if (status == napi_ok && nc != NULL) {
-    destroy_loop_fields(nc);
-    voice_send_destroy(&nc->ctx);
-    free(nc);
+    close_async_and_finish(nc);
   }
 
   napi_get_undefined(env, &args[0]);

@@ -1764,7 +1764,7 @@ class Connection extends EventEmitter {
 
         this._nativeSender.resetNonce(this.nonce)
         this._nativeSender.startLoop(
-          this.udp._handle.fd,
+          this.udp,
           this.udpInfo.ip,
           this.udpInfo.port
         )

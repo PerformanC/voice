@@ -37,10 +37,10 @@ class NativeAudioSender {
     return _native.encrypt(this.#ctx, audioChunk)
   }
 
-  startLoop(fd, ip, port) {
+  startLoop(udpSocket, ip, port) {
     if (!this.#ctx) throw new Error('Context destroyed')
 
-    _native.startSendLoop(this.#ctx, fd, ip, port)
+    _native.startSendLoop(this.#ctx, udpSocket, ip, port)
   }
 
   pushAudio(chunk) {
