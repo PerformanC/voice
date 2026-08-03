@@ -1,5 +1,3 @@
-/* INFO: https://github.com/PerformanC/CThreads project. BSD-3-Clause licensed. */
-
 #ifndef CTHREADS_H
 #define CTHREADS_H
 
@@ -18,9 +16,10 @@ struct cthreads_args {
 #ifdef _WIN32
   #define CTHREADS_THREAD_DWCREATIONFLAGS 1
 
+  #define CTHREADS_THREAD_STACK 1
+
   #define CTHREADS_RWLOCK 1
 #else
-  #define CTHREADS_THREAD_STACKADDR 1
   #define CTHREADS_THREAD_DETACHSTATE 1
   #define CTHREADS_THREAD_GUARDSIZE 1
   #ifndef __ANDROID__
@@ -32,6 +31,10 @@ struct cthreads_args {
     #include <semaphore.h>
     #define CTHREADS_SEMAPHORE 1
     #define CTHREADS_THREAD_STACK 1
+  #endif
+
+  #ifdef _POSIX_THREAD_ATTR_STACKADDR
+    #define CTHREADS_THREAD_STACKADDR 1
   #endif
 
   #define CTHREADS_MUTEX_ATTR 1
@@ -65,6 +68,7 @@ struct cthreads_args {
 struct cthreads_thread {
   #ifdef _WIN32
     HANDLE wThread;
+    DWORD  wThreadId;
   #else
     pthread_t pThread;
   #endif
@@ -120,6 +124,9 @@ struct cthreads_cond {
     CONDITION_VARIABLE wCond;
   #else
     pthread_cond_t pCond;
+    #ifdef CTHREADS_COND_CLOCK
+      int clock;
+    #endif
   #endif
 };
 
@@ -137,7 +144,6 @@ struct cthreads_cond {
 #ifdef CTHREADS_RWLOCK
 struct cthreads_rwlock {
   #ifdef _WIN32
-    int type;
     PSRWLOCK wRWLock;
   #else
     pthread_rwlock_t pRWLock;
@@ -405,15 +411,28 @@ int cthreads_cond_timedwait(struct cthreads_cond *cond, struct cthreads_mutex *m
   int cthreads_rwlock_rdlock(struct cthreads_rwlock *rwlock);
 
   /**
-   * Unlocks a read-write lock.
+   * Unlocks a read-write shared lock. 
    *
    * - pthread: pthread_rwlock_unlock
-   * - windows threads: ReleaseSRWLockShared or ReleaseSRWLockExclusive
+   * - windows threads: ReleaseSRWLockShared
    *
+   * @note Calling this is UB if the lock was acquired by `cthreads_rwlock_wrlock` on Windows, but not POSIX.
    * @param rwlock Pointer to the read-write lock structure to be unlocked.
    * @return 0 on success, non-zero error code on failure.
    */
-  int cthreads_rwlock_unlock(struct cthreads_rwlock *rwlock);
+  int cthreads_rwlock_unlock_shared(struct cthreads_rwlock *rwlock);
+
+  /**
+   * Unlocks a read-write exclusive lock. 
+   *
+   * - pthread: pthread_rwlock_unlock
+   * - windows threads: ReleaseSRWLockExclusive
+   *
+   * @note Calling this is UB if the lock was acquired by `cthreads_rwlock_rdlock` on Windows, but not POSIX.
+   * @param rwlock Pointer to the read-write lock structure to be unlocked.
+   * @return 0 on success, non-zero error code on failure.
+   */
+  int cthreads_rwlock_unlock_exclusive(struct cthreads_rwlock *rwlock);
 
   /**
    * Acquires a write lock on a read-write lock.
@@ -436,17 +455,17 @@ int cthreads_cond_timedwait(struct cthreads_cond *cond, struct cthreads_mutex *m
    * @return 0 on success, non-zero error code on failure.
    */
   int cthreads_rwlock_destroy(struct cthreads_rwlock *rwlock);
-
-  /**
-   * Returns the platform-specific error code.
-   *
-   * - pthread: errno
-   * - windows: GetLastError()
-   *
-   * @return Platform-specific error code
-   */
-  int cthreads_error_code(void);
 #endif
+
+/**
+  * Returns the platform-specific error code.
+  *
+  * - pthread: errno
+  * - windows: GetLastError()
+  *
+  * @return Platform-specific error code
+  */
+int cthreads_error_code(void);
 
 /**
  * Obtains the error code and writes at most `length` 

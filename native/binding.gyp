@@ -4,7 +4,8 @@
       "target_name": "voice_send_native",
       "sources": [
         "src/binding.c",
-        "src/voice_send.c"
+        "src/voice_send.c",
+        "src/cthreads.c"
       ],
       "include_dirs": [
         "."
@@ -17,6 +18,7 @@
         ["OS=='linux'", {
           "cflags": [
             "-std=c99",
+            "-D_POSIX_C_SOURCE=200809L",
             "-Wall",
             "-Wextra",
             "-Wpedantic"
