@@ -988,6 +988,16 @@ class Connection extends EventEmitter {
               'error',
               new Error(`[DAVE] Failed to process proposals: ${e.message}`)
             )
+          
+            try {
+              const tid = this.mlsSession?.lastTransitionId ?? 0
+              this.mlsSession?.recoverFromInvalidTransition(tid)
+            } catch (e2) {
+              this.emit(
+                'error',
+                new Error(`[DAVE] recovery from failed proposals failed: ${e2.message}`)
+              )
+            }
           }
 
           break
