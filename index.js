@@ -1890,7 +1890,7 @@ class Connection extends EventEmitter {
     this.player.nextPacket = now
     this._packetInterval()
 
-    if (!this.audioStream.canStop) {
+    if (!this.audioStream?.canStop) {
       this.audioStream.removeListener(
         'finishBuffering',
         this._boundMarkAsStoppable
