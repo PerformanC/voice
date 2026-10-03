@@ -208,6 +208,12 @@ class VoiceMLS extends EventEmitter {
       return
     }
 
+    if (this.externalSenderSet && !this.externalSender?.equals(nextExternalSender)) {
+      this.externalSender = nextExternalSender
+      this.reinit({ emitKeyPackage: true })
+      return
+    }
+
     this.session.setExternalSender(nextExternalSender)
     this.externalSender = nextExternalSender
     this.externalSenderSet = true
@@ -1890,7 +1896,7 @@ class Connection extends EventEmitter {
     this.player.nextPacket = now
     this._packetInterval()
 
-    if (!this.audioStream?.canStop) {
+    if (this.audioStream && !this.audioStream.canStop) {
       this.audioStream.removeListener(
         'finishBuffering',
         this._boundMarkAsStoppable
