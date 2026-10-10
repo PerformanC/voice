@@ -285,9 +285,12 @@ class VoiceMLS extends EventEmitter {
     this._pendingDowngrade = false
     this.pendingTransitions.clear()
 
-    this.emit('invalidateTransition', transitionId)
-    this.reinit({ emitKeyPackage: true })
-    this.reinitializing = false
+    try {
+      this.emit('invalidateTransition', transitionId)
+      this.reinit({ emitKeyPackage: true })
+    } finally {
+      this.reinitializing = false
+    }
   }
 
   processProposals(payload, connectedclients) {
@@ -668,24 +671,28 @@ class Connection extends EventEmitter {
           this._wsSendBinary(DAVE_OPCODES.COMMIT_WELCOME, response)
         }
       } catch (e) {
-        this.emit(
-          'error',
-          new Error(`[DAVE] processProposals failed: ${e.message}`)
-        )
-
         this.pendingProposals.length = 0
 
         try {
-          const tid = this.mlsSession?.lastTransitionId ?? 0
-          this.mlsSession?.recoverFromInvalidTransition(tid)
-        } catch (e2) {
+          const transitionId = this.mlsSession.lastTransitionId ?? 0
+          this.mlsSession.recoverFromInvalidTransition(transitionId)
+        } catch (recoveryError) {
           this.emit(
             'error',
             new Error(
-              `[DAVE] recovery from failed proposals failed: ${e2.message}`
+              `[DAVE] recovery from failed proposals failed: ${recoveryError.message}`
             )
           )
+          break
         }
+
+        this.emit(
+          'error',
+          new Error(`[DAVE] processProposals failed: ${e.message}`, {
+            cause: 'DAVE_RECOVERY_STARTED'
+          })
+        )
+        break
       }
     }
   }
@@ -990,20 +997,25 @@ class Connection extends EventEmitter {
               this._wsSendBinary(DAVE_OPCODES.COMMIT_WELCOME, response)
             }
           } catch (e) {
-            this.emit(
-              'error',
-              new Error(`[DAVE] Failed to process proposals: ${e.message}`)
-            )
-          
             try {
-              const tid = this.mlsSession?.lastTransitionId ?? 0
-              this.mlsSession?.recoverFromInvalidTransition(tid)
-            } catch (e2) {
+              const transitionId = this.mlsSession.lastTransitionId ?? 0
+              this.mlsSession.recoverFromInvalidTransition(transitionId)
+            } catch (recoveryError) {
               this.emit(
                 'error',
-                new Error(`[DAVE] recovery from failed proposals failed: ${e2.message}`)
+                new Error(
+                  `[DAVE] recovery from failed proposals failed: ${recoveryError.message}`
+                )
               )
+              break
             }
+
+            this.emit(
+              'error',
+              new Error(`[DAVE] Failed to process proposals: ${e.message}`, {
+                cause: 'DAVE_RECOVERY_STARTED'
+              })
+            )
           }
 
           break
