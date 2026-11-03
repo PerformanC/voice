@@ -1973,12 +1973,13 @@ class Connection extends EventEmitter {
 
     const ws = this.ws
     if (ws) {
+      /* INFO: Remove listeners before close(), which can synchronously emit 'close' and trigger a reconnect during cleanup. */
+      ws.removeAllListeners()
       try {
         const closeCode =
           code === 1005 || code === 1006 || code === 1015 ? 1000 : code
         ws.close(closeCode, reason ?? 'Closing')
       } catch {}
-      ws.removeAllListeners()
       this.ws = null
     }
 
