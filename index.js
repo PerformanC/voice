@@ -1,29 +1,16 @@
+import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
 import dgram from 'node:dgram'
 import EventEmitter from 'node:events'
 import { performance } from 'node:perf_hooks'
 import { PassThrough } from 'node:stream'
+
 import WebSocket from '@performanc/pwsl'
+import * as MLS from '@snazzah/davey'
+
 import Sodium from './sodium.js'
 
-let MLS = null
-try {
-  const lib = await import('@snazzah/davey')
-  MLS = lib
-} catch (err) {
-  throw new Error(
-    '[DAVE] @snazzah/davey is required for Discord voice E2EE support. ' +
-      'Install it or voice connections cannot be created.',
-    { cause: err }
-  )
-}
-
-const MLS_PROTOCOL_VERSION = MLS?.DAVE_PROTOCOL_VERSION ?? 0
-if (!MLS_PROTOCOL_VERSION) {
-  throw new Error(
-    '[DAVE] @snazzah/davey did not expose a supported DAVE_PROTOCOL_VERSION.'
-  )
-}
+const MLS_PROTOCOL_VERSION = MLS.DAVE_PROTOCOL_VERSION
 
 const OPUS_SAMPLE_RATE = 48000
 const OPUS_FRAME_DURATION = 20
@@ -54,7 +41,6 @@ function _getOrCreateGuildMap(guildId) {
   return guildMap
 }
 
-const PASSTHROUGH_DOWNGRADE_SECS = 10
 const PASSTHROUGH_UPGRADE_SECS = 10
 
 const DEFAULT_DECRYPTION_FAILURE_TOLERANCE = 36
@@ -122,13 +108,12 @@ class VoiceMLS extends EventEmitter {
     this.userId = userId
     this.channelId = channelId
 
-    this.lastTransitionId = undefined
+    this.lastTransitionId = null
     this.pendingTransitions = new Map()
 
-    this.downgraded = false
+    this.downgraded = protocolVersion === 0
 
     this.consecutiveFailures = 0
-    this.consecutiveEncryptionFailures = 0
     this.reinitializing = false
     this.failureTolerance =
       options.decryptionFailureTolerance ?? DEFAULT_DECRYPTION_FAILURE_TOLERANCE
@@ -140,8 +125,6 @@ class VoiceMLS extends EventEmitter {
 
     this._pendingKeyPackage = null
 
-    this._pendingDowngrade = false
-
     this.reinit({ emitKeyPackage: false })
   }
 
@@ -151,10 +134,8 @@ class VoiceMLS extends EventEmitter {
 
   reinit({ emitKeyPackage } = { emitKeyPackage: true }) {
     this.pendingTransitions.clear()
-    this._pendingDowngrade = false
-    this.externalSenderSet = false
     this.consecutiveFailures = 0
-    this.consecutiveEncryptionFailures = 0
+    this._pendingKeyPackage = null
 
     if (this.protocolVersion > 0) {
       if (this.session) {
@@ -167,34 +148,29 @@ class VoiceMLS extends EventEmitter {
         )
       }
 
-      if (this.externalSender) {
-        try {
-          this.session.setExternalSender(this.externalSender)
-          this.externalSenderSet = true
-        } catch {}
-      }
+      if (this.downgraded) this.session.setPassthroughMode(true)
 
       const keyPackage = this.session.getSerializedKeyPackage()
       this._pendingKeyPackage = keyPackage
 
-      if (emitKeyPackage) this.emit('keyPackage', keyPackage)
-      return
+      if (emitKeyPackage) this.flushKeyPackage()
+
+      return;
     }
 
     if (this.session) {
-      try {
-        this.session.reset()
-      } catch {}
-      try {
-        this.session.setPassthroughMode(true, PASSTHROUGH_UPGRADE_SECS)
-      } catch {}
+      this.session.reset()
+      this.session.setPassthroughMode(true)
     }
   }
 
   flushKeyPackage() {
     if (!this._pendingKeyPackage) return null
-    this.emit('keyPackage', this._pendingKeyPackage)
-    return this._pendingKeyPackage
+    const keyPackage = this._pendingKeyPackage
+    this._pendingKeyPackage = null
+    this.emit('keyPackage', keyPackage)
+
+    return keyPackage
   }
 
   setExternalSender(externalSender) {
@@ -205,13 +181,19 @@ class VoiceMLS extends EventEmitter {
       this.externalSenderSet &&
       this.externalSender?.equals(nextExternalSender)
     ) {
-      return
+      return;
     }
 
-    if (this.externalSenderSet && !this.externalSender?.equals(nextExternalSender)) {
+    if (
+      this.externalSenderSet &&
+      !this.externalSender?.equals(nextExternalSender)
+    ) {
+      this.reinit({ emitKeyPackage: false })
+      this.session.setExternalSender(nextExternalSender)
       this.externalSender = nextExternalSender
-      this.reinit({ emitKeyPackage: true })
-      return
+      this.flushKeyPackage()
+
+      return;
     }
 
     this.session.setExternalSender(nextExternalSender)
@@ -220,19 +202,19 @@ class VoiceMLS extends EventEmitter {
   }
 
   prepareTransition(data) {
+    this.session?.prepareTransition(data.transition_id, data.protocol_version)
     this.pendingTransitions.set(data.transition_id, data.protocol_version)
+
+    if (data.protocol_version === 0) {
+      this.session?.setPassthroughMode(true)
+    }
 
     if (data.transition_id === 0) {
       this.executeTransition(0)
+
       return false
     }
 
-    if (data.protocol_version === 0) {
-      this._pendingDowngrade = true
-      try {
-        this.session?.setPassthroughMode(true, PASSTHROUGH_DOWNGRADE_SECS)
-      } catch {}
-    }
     return true
   }
 
@@ -240,28 +222,32 @@ class VoiceMLS extends EventEmitter {
     const nextVersion = this.pendingTransitions.get(transitionId)
     if (nextVersion === undefined) return false
 
+    if (transitionId !== 0) {
+      try {
+        if (!this.session?.executeTransition(transitionId)) return false
+      } finally {
+        this.pendingTransitions.delete(transitionId)
+      }
+    }
+
     const oldVersion = this.protocolVersion
     this.protocolVersion = nextVersion
-    this._pendingDowngrade = false
 
     if (oldVersion !== this.protocolVersion && this.protocolVersion === 0) {
       this.downgraded = true
     } else if (
-      transitionId > 0 &&
+      (transitionId > 0 || this.session?.canEncrypt) &&
       this.downgraded &&
       this.protocolVersion > 0
     ) {
       this.downgraded = false
-      try {
-        this.session?.setPassthroughMode(true, PASSTHROUGH_UPGRADE_SECS)
-      } catch {}
+      this.session?.setPassthroughMode(false, PASSTHROUGH_UPGRADE_SECS)
     }
 
     this.pendingTransitions.delete(transitionId)
 
     this.reinitializing = false
     this.consecutiveFailures = 0
-    this.consecutiveEncryptionFailures = 0
     this.lastTransitionId = transitionId
 
     return true
@@ -270,27 +256,19 @@ class VoiceMLS extends EventEmitter {
   prepareEpoch(data) {
     if (data.epoch === 1) {
       this.protocolVersion = data.protocol_version
-      this.downgraded = false
-      this._pendingDowngrade = false
       this.reinit({ emitKeyPackage: true })
     }
   }
 
   recoverFromInvalidTransition(transitionId) {
-    if (this.reinitializing) return
+    if (this.reinitializing) return;
 
     this.reinitializing = true
     this.consecutiveFailures = 0
-    this.consecutiveEncryptionFailures = 0
-    this._pendingDowngrade = false
     this.pendingTransitions.clear()
 
-    try {
-      this.emit('invalidateTransition', transitionId)
-      this.reinit({ emitKeyPackage: true })
-    } finally {
-      this.reinitializing = false
-    }
+    this.emit('invalidateTransition', transitionId)
+    this.reinit({ emitKeyPackage: true })
   }
 
   processProposals(payload, connectedclients) {
@@ -305,29 +283,35 @@ class VoiceMLS extends EventEmitter {
     )
 
     if (!commit) return null
+
     return welcome ? Buffer.concat([commit, welcome]) : commit
   }
 
-  _processServerTransition(serverPayload, method) {
+  _processServerTransition(serverPayload, method, recognizedUserIds) {
     if (!this.session) throw new Error('No session available')
 
     const transitionId = serverPayload.readUInt16BE(0)
 
     try {
-      this.session[method](serverPayload.subarray(2))
+      const processed = this.session[method](
+        serverPayload.subarray(2),
+        recognizedUserIds
+      )
+      if (processed === false) return { transitionId, success: false }
 
-      if (transitionId !== 0 && !this.pendingTransitions.has(transitionId)) {
-        this.pendingTransitions.set(transitionId, this.protocolVersion)
-      }
+      const protocolVersion = this.session.protocolVersion
+      this.session.prepareTransition(transitionId, protocolVersion)
+
+      this.pendingTransitions.set(transitionId, protocolVersion)
 
       if (transitionId === 0) {
-        this.reinitializing = false
-        this.lastTransitionId = 0
+        this.executeTransition(0)
       }
 
       return { transitionId, success: true }
     } catch {
       this.recoverFromInvalidTransition(transitionId)
+
       return { transitionId, success: false }
     }
   }
@@ -336,8 +320,12 @@ class VoiceMLS extends EventEmitter {
     return this._processServerTransition(serverPayload, 'processCommit')
   }
 
-  processWelcome(serverPayload) {
-    return this._processServerTransition(serverPayload, 'processWelcome')
+  processWelcome(serverPayload, recognizedUserIds) {
+    return this._processServerTransition(
+      serverPayload,
+      'processWelcome',
+      recognizedUserIds
+    )
   }
 
   encrypt(packet) {
@@ -348,23 +336,12 @@ class VoiceMLS extends EventEmitter {
       packet[2] === 0xfe
     )
       return packet
-    if (this._pendingDowngrade) return packet
-    if (this.protocolVersion === 0) return packet
-    // don't set this to null, when the session is not ready, return the packet instead
-    // Should fix some issues regarding the bot beign alone in the vc; since the MLS will auto set it to a fallback encryption mode
-    if (!this.session?.ready) return packet
+    if (this.protocolVersion === 0 || this.downgraded) return packet
+    if (!this.session?.canEncrypt) return null
 
     try {
-      const encrypted = this.session.encryptOpus(packet)
-      this.consecutiveEncryptionFailures = 0
-      return encrypted
+      return this.session.encryptOpus(packet)
     } catch {
-      if (!this.reinitializing && !this.transitioning) {
-        this.consecutiveEncryptionFailures++
-        if (this.consecutiveEncryptionFailures > this.failureTolerance) {
-          this.recoverFromInvalidTransition(this.lastTransitionId ?? 0)
-        }
-      }
       return null
     }
   }
@@ -379,21 +356,19 @@ class VoiceMLS extends EventEmitter {
       return packet
     }
 
-    if (!this.session?.ready) {
-      if (
-        this.protocolVersion !== 0 &&
-        !this.transitioning &&
-        !this._pendingDowngrade
-      ) {
-        return null
-      }
-      return packet
-    }
-
     const canTry =
-      this.protocolVersion !== 0 || this.session.canPassthrough(userId)
+      this.session?.ready &&
+      ((this.protocolVersion !== 0 && !this.downgraded) ||
+        this.session.canPassthrough(userId))
 
-    if (!canTry) return packet
+    if (!canTry) {
+      if (this.protocolVersion !== 0 && !this.downgraded) return null
+
+      return packet.length > 2 &&
+        packet.readUInt16BE(packet.length - 2) === 0xfafa
+        ? null
+        : packet
+    }
 
     try {
       const buffer = this.session.decrypt(
@@ -402,12 +377,22 @@ class VoiceMLS extends EventEmitter {
         packet
       )
       this.consecutiveFailures = 0
+
       return buffer
     } catch {
-      if (!this.reinitializing && !this.transitioning) {
+      if (
+        this.protocolVersion !== 0 &&
+        !this.downgraded &&
+        !this.reinitializing &&
+        !this.transitioning
+      ) {
         this.consecutiveFailures++
-        if (this.consecutiveFailures > this.failureTolerance) {
-          this.recoverFromInvalidTransition(this.lastTransitionId ?? 0)
+        if (
+          this.failureTolerance > 0 &&
+          this.lastTransitionId !== null &&
+          this.consecutiveFailures > this.failureTolerance
+        ) {
+          this.recoverFromInvalidTransition(this.lastTransitionId)
         }
       }
 
@@ -492,7 +477,6 @@ class Connection extends EventEmitter {
     this.lastExternalSender = null
     this.pendingProposals = []
     this.connectedUserIds = new Set()
-    this._keyPackageSent = false
     this._silenceKeepaliveTimer = null
     this._silenceFrameTimeout = null
 
@@ -544,13 +528,13 @@ class Connection extends EventEmitter {
   }
 
   _wsSendJSON(op, d) {
-    if (!this.ws) return
+    if (!this.ws) return;
     this.ws.send(JSON.stringify({ op, d }))
   }
 
   _wsSendBinary(opcode, payload) {
     const ws = this.ws
-    if (!ws) return
+    if (!ws) return;
 
     const p = payload
       ? Buffer.isBuffer(payload)
@@ -575,9 +559,8 @@ class Connection extends EventEmitter {
   }
 
   _initMLSSessionIfNeeded(protocolVersionHint) {
-    if (!MLS) return
-    if (!this.channelId) return
-    if (this.mlsSession) return
+    if (!this.channelId) return;
+    if (this.mlsSession) return;
 
     const initialVersion =
       typeof protocolVersionHint === 'number'
@@ -619,7 +602,6 @@ class Connection extends EventEmitter {
 
       this.mlsSession.flushKeyPackage()
       this._drainBufferedProposals()
-      this._keyPackageSent = true
     } catch (error) {
       this.emit(
         'error',
@@ -628,39 +610,12 @@ class Connection extends EventEmitter {
     }
   }
 
-  _ensureKeyPackageSent() {
-    if (!MLS) return
-    if (this._keyPackageSent) return
-
-    if (!this.mlsSession) {
-      this._initMLSSessionIfNeeded(this.mlsProtocolVersion)
-    }
-
-    if (!this.mlsSession) return
-
-    try {
-      const kp =
-        this.mlsSession._pendingKeyPackage ??
-        this.mlsSession.session?.getSerializedKeyPackage?.()
-
-      if (kp && this.ws) {
-        this._wsSendBinary(DAVE_OPCODES.KEY_PACKAGE, kp)
-        this._keyPackageSent = true
-      }
-    } catch (e) {
-      this.emit(
-        'error',
-        new Error(`[DAVE] Failed to send key package: ${e.message}`)
-      )
-    }
-  }
-
   _drainBufferedProposals() {
-    if (!this.mlsSession) return
-    if (!this.mlsSession.externalSenderSet) return
-    if (this.pendingProposals.length === 0) return
+    if (!this.mlsSession) return;
+    if (!this.mlsSession.externalSenderSet) return;
+    if (this.pendingProposals.length === 0) return;
 
-    const connected = Array.from(this.connectedUserIds)
+    const connected = [...this.connectedUserIds, this.userId]
     const proposals = this.pendingProposals
     this.pendingProposals = []
 
@@ -803,13 +758,17 @@ class Connection extends EventEmitter {
   }
 
   _startSilenceKeepalive() {
-    if (this._silenceKeepaliveTimer) return
+    if (this._silenceKeepaliveTimer) return;
 
-    // https://github.com/Snazzah/davey/blob/master/docs/USAGE.md#handling-voice-packets
-    // Silence frames are already handled by the MLS session
+    /* INFO: Silence frames are already handled by the MLS session.
+
+       SOURCES:
+       - https://github.com/Snazzah/davey/blob/master/docs/USAGE.md#handling-voice-packets
+    */
     if (this.mlsSession && this.mlsSession.protocolVersion > 0) {
       this._setSpeaking(1 << 0)
-      return
+
+      return;
     }
 
     this._setSpeaking(1 << 0)
@@ -817,7 +776,8 @@ class Connection extends EventEmitter {
     this._silenceKeepaliveTimer = setInterval(() => {
       if (!this.udpInfo?.secretKey || this.connectedUserIds.size > 0) {
         this._stopSilenceKeepalive()
-        return
+
+        return;
       }
       this.sendAudioChunk(OPUS_SILENCE_FRAME)
     }, 5000)
@@ -885,7 +845,7 @@ class Connection extends EventEmitter {
 
     this.ws = new WebSocket(`wss://${this.voiceServer.endpoint}/?v=8`, {
       headers: {
-        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.2.0)'
+        'User-Agent': 'DiscordBot (https://github.com/PerformanC/voice, 2.3.0)'
       }
     })
 
@@ -914,41 +874,41 @@ class Connection extends EventEmitter {
           user_id: this.userId,
           session_id: this.sessionId,
           token: this.voiceServer.token,
-          max_dave_protocol_version: this.channelId
-            ? this.mlsProtocolVersion
-            : 0
+          max_dave_protocol_version: this.channelId ? MLS_PROTOCOL_VERSION : 0
         })
       }
     })
 
     this.ws.on('message', (data) => {
       if (typeof data === 'string') {
-        let payload
+        let payload;
         try {
           payload = JSON.parse(data)
         } catch {
-          return
+          return;
         }
 
         if (typeof payload.seq === 'number') this.lastSequence = payload.seq
+
         return this._handleJSON(payload, cb).catch((err) =>
           this.emit('error', err)
         )
       }
 
       const buf = toNodeBuffer(data)
-      if (!buf) return
+      if (!buf) return;
 
       const maybeJSON = tryParseJSONFromBuffer(buf)
       if (maybeJSON) {
         if (typeof maybeJSON.seq === 'number') this.lastSequence = maybeJSON.seq
+
         return this._handleJSON(maybeJSON, cb).catch((err) =>
           this.emit('error', err)
         )
       }
 
       const parsed = this._parseServerBinaryMessage(buf)
-      if (!parsed) return
+      if (!parsed) return;
 
       const { opcode, payload } = parsed
 
@@ -988,7 +948,7 @@ class Connection extends EventEmitter {
           }
 
           try {
-            const connected = Array.from(this.connectedUserIds)
+            const connected = [...this.connectedUserIds, this.userId]
             const response = this.mlsSession.processProposals(
               payload,
               connected
@@ -1047,7 +1007,10 @@ class Connection extends EventEmitter {
           if (!this.mlsSession) break
 
           try {
-            const result = this.mlsSession.processWelcome(payload)
+            const result = this.mlsSession.processWelcome(payload, [
+              ...this.connectedUserIds,
+              this.userId
+            ])
             if (result.success && result.transitionId !== 0) {
               this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
                 transition_id: result.transitionId
@@ -1294,13 +1257,6 @@ class Connection extends EventEmitter {
           let packet = decryptedPacket
 
           if (this.mlsSession && userData.userId) {
-            if (
-              !this.mlsSession.session?.ready &&
-              this.mlsSession.protocolVersion !== 0
-            ) {
-              return
-            }
-
             const decrypted = this.mlsSession.decrypt(packet, userData.userId)
             if (decrypted !== null) packet = decrypted
             else return
@@ -1445,23 +1401,21 @@ class Connection extends EventEmitter {
           )
         }
 
+        const serverVersion = payload.d.dave_protocol_version ?? 0
+
+        this.mlsProtocolVersion = Math.min(serverVersion, MLS_PROTOCOL_VERSION)
+        if (this.mlsSession) {
+          this.mlsSession.protocolVersion = this.mlsProtocolVersion
+          this.mlsSession.downgraded = this.mlsProtocolVersion === 0
+          this.mlsSession.reinit()
+        } else {
+          this._initMLSSessionIfNeeded(this.mlsProtocolVersion)
+        }
+
         if (cb) cb()
 
         this._updateState({ status: 'connected' })
         this._updatePlayerState({ status: 'idle', reason: 'connected' })
-
-        const serverVersion = payload.d.dave_protocol_version ?? 0
-
-        this.mlsProtocolVersion = Math.min(serverVersion, MLS_PROTOCOL_VERSION)
-        this._keyPackageSent = false
-
-        if (serverVersion > 0) {
-          this._initMLSSessionIfNeeded(this.mlsProtocolVersion)
-          this._ensureKeyPackageSent()
-        } else if (this.mlsSession) {
-          this.mlsSession.protocolVersion = 0
-          this.mlsSession.reinit({ emitKeyPackage: false })
-        }
 
         break
       }
@@ -1549,12 +1503,12 @@ class Connection extends EventEmitter {
       case DAVE_OPCODES.PREPARE_TRANSITION: {
         if (payload.d?.protocol_version > 0 && !this.mlsSession) {
           this._initMLSSessionIfNeeded(payload.d.protocol_version)
-          this._ensureKeyPackageSent()
         }
 
         if (this.mlsSession) {
           try {
             const needsReady = this.mlsSession.prepareTransition(payload.d)
+            this.mlsProtocolVersion = this.mlsSession.protocolVersion
             if (needsReady) {
               this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
                 transition_id: payload.d.transition_id
@@ -1575,6 +1529,7 @@ class Connection extends EventEmitter {
         if (this.mlsSession) {
           try {
             this.mlsSession.executeTransition(payload.d.transition_id)
+            this.mlsProtocolVersion = this.mlsSession.protocolVersion
           } catch (e) {
             this.emit(
               'error',
@@ -1586,24 +1541,11 @@ class Connection extends EventEmitter {
       }
 
       case DAVE_OPCODES.PREPARE_EPOCH: {
-        if (payload.d?.protocol_version > 0 && !this.mlsSession) {
-          this._initMLSSessionIfNeeded(payload.d.protocol_version)
-        }
-
-        if (this.mlsSession) {
+        if (payload.d?.epoch === 1) {
           try {
-            this.mlsSession.prepareEpoch(payload.d)
-
-            if (payload.d?.epoch === 1) {
-              this._ensureKeyPackageSent()
-            }
-
-            const transitionId = payload.d?.transition_id
-            if (typeof transitionId === 'number') {
-              this._wsSendJSON(DAVE_OPCODES.TRANSITION_READY, {
-                transition_id: transitionId
-              })
-            }
+            this.mlsProtocolVersion = payload.d.protocol_version
+            if (this.mlsSession) this.mlsSession.prepareEpoch(payload.d)
+            else this._initMLSSessionIfNeeded(this.mlsProtocolVersion)
           } catch (e) {
             this.emit(
               'error',
@@ -1640,7 +1582,13 @@ class Connection extends EventEmitter {
 
     if (this.mlsSession) {
       chunk = this.mlsSession.encrypt(chunk)
-      if (!chunk) return
+      if (!chunk) {
+        /* INFO: Consumed audio still advances playback when DAVE drops it while alone. */
+        this.statistics.packetsLost++
+        this.statistics.packetsExpected++
+
+        return;
+      }
     }
 
     this._sendBuffer[0] = 0x80
@@ -2010,9 +1958,9 @@ class Connection extends EventEmitter {
     }
 
     this.pendingExternalSender = null
+    this.lastExternalSender = null
     this.pendingProposals = []
     this.connectedUserIds.clear()
-    this._keyPackageSent = false
 
     for (const ssrc of this.ssrcs.keys()) {
       this._unregisterSSRC(ssrc)
@@ -2043,7 +1991,6 @@ class Connection extends EventEmitter {
     this.lastExternalSender = null
     this.pendingProposals = []
     this.connectedUserIds.clear()
-    this._keyPackageSent = false
   }
 
   voiceStateUpdate(obj) {
