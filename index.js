@@ -1447,6 +1447,8 @@ class Connection extends EventEmitter {
       case 8: {
         if (this.hbInterval) clearInterval(this.hbInterval)
 
+        /* INFO: A new socket needs its own heartbeat budget; misses from the previous socket would close it before its first heartbeat. */
+        this.hbIntervalMissed = 0
         this.hbInterval = setInterval(() => {
           if (this.hbIntervalMissed >= 3) {
             if (this.hbInterval) clearInterval(this.hbInterval)
